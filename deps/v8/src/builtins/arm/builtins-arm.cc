@@ -6,6 +6,7 @@
 
 #include "src/api/api-arguments.h"
 #include "src/codegen/code-factory.h"
+#include "src/codegen/interface-descriptors-inl.h"
 // For interpreter_entry_return_pc_offset. TODO(jkummerow): Drop.
 #include "src/codegen/macro-assembler-inl.h"
 #include "src/codegen/register-configuration.h"
@@ -118,7 +119,7 @@ void Generate_JSBuiltinsConstructStubHelper(MacroAssembler* masm) {
     // r0: number of arguments (untagged)
     // r1: constructor function
     // r3: new target
-    __ InvokeFunctionWithNewTarget(r1, r3, r0, CALL_FUNCTION);
+    __ InvokeFunctionWithNewTarget(r1, r3, r0, InvokeType::kCall);
 
     // Restore context from the frame.
     __ ldr(cp, MemOperand(fp, ConstructFrameConstants::kContextOffset));
@@ -236,7 +237,7 @@ void Builtins::Generate_JSConstructStubGeneric(MacroAssembler* masm) {
   __ Push(r6);
 
   // Call the function.
-  __ InvokeFunctionWithNewTarget(r1, r3, r0, CALL_FUNCTION);
+  __ InvokeFunctionWithNewTarget(r1, r3, r0, InvokeType::kCall);
 
   // ----------- S t a t e -------------
   //  --                 r0: constructor result
@@ -337,7 +338,7 @@ void Builtins::Generate_ResumeGeneratorTrampoline(MacroAssembler* masm) {
   // Store input value into generator object.
   __ str(r0, FieldMemOperand(r1, JSGeneratorObject::kInputOrDebugPosOffset));
   __ RecordWriteField(r1, JSGeneratorObject::kInputOrDebugPosOffset, r0,
-                      kLRHasNotBeenSaved, kDontSaveFPRegs);
+                      kLRHasNotBeenSaved, SaveFPRegsMode::kIgnore);
 
   // Load suspended function and context.
   __ ldr(r4, FieldMemOperand(r1, JSGeneratorObject::kFunctionOffset));
@@ -388,16 +389,13 @@ void Builtins::Generate_ResumeGeneratorTrampoline(MacroAssembler* masm) {
          FieldMemOperand(r1, JSGeneratorObject::kParametersAndRegistersOffset));
   {
     Label done_loop, loop;
-    __ mov(r6, r3);
-
     __ bind(&loop);
-    __ sub(r6, r6, Operand(1), SetCC);
+    __ sub(r3, r3, Operand(1), SetCC);
     __ b(lt, &done_loop);
-    __ add(scratch, r2, Operand(r6, LSL, kTaggedSizeLog2));
+    __ add(scratch, r2, Operand(r3, LSL, kTaggedSizeLog2));
     __ ldr(scratch, FieldMemOperand(scratch, FixedArray::kHeaderSize));
     __ Push(scratch);
     __ b(&loop);
-
     __ bind(&done_loop);
 
     // Push receiver.
@@ -495,7 +493,7 @@ static_assert(kPushedStackSpace == EntryFrameConstants::kDirectCallerSPOffset +
 //   using JSEntryFunction = GeneratedCode<Address(
 //       Address root_register_value, MicrotaskQueue* microtask_queue)>;
 void Generate_JSEntryVariant(MacroAssembler* masm, StackFrame::Type type,
-                             Builtins::Name entry_trampoline) {
+                             Builtin entry_trampoline) {
   // The register state is either:
   //   r0:                            root_register_value
   //   r1:                            code entry
@@ -658,18 +656,17 @@ void Generate_JSEntryVariant(MacroAssembler* masm, StackFrame::Type type,
 }  // namespace
 
 void Builtins::Generate_JSEntry(MacroAssembler* masm) {
-  Generate_JSEntryVariant(masm, StackFrame::ENTRY,
-                          Builtins::kJSEntryTrampoline);
+  Generate_JSEntryVariant(masm, StackFrame::ENTRY, Builtin::kJSEntryTrampoline);
 }
 
 void Builtins::Generate_JSConstructEntry(MacroAssembler* masm) {
   Generate_JSEntryVariant(masm, StackFrame::CONSTRUCT_ENTRY,
-                          Builtins::kJSConstructEntryTrampoline);
+                          Builtin::kJSConstructEntryTrampoline);
 }
 
 void Builtins::Generate_JSRunMicrotasksEntry(MacroAssembler* masm) {
   Generate_JSEntryVariant(masm, StackFrame::ENTRY,
-                          Builtins::kRunMicrotasksTrampoline);
+                          Builtin::kRunMicrotasksTrampoline);
 }
 
 static void Generate_JSEntryTrampolineHelper(MacroAssembler* masm,
@@ -799,8 +796,8 @@ static void ReplaceClosureCodeWithOptimizedCode(MacroAssembler* masm,
   // Store code entry in the closure.
   __ str(optimized_code, FieldMemOperand(closure, JSFunction::kCodeOffset));
   __ RecordWriteField(closure, JSFunction::kCodeOffset, optimized_code,
-                      kLRHasNotBeenSaved, kDontSaveFPRegs, OMIT_REMEMBERED_SET,
-                      OMIT_SMI_CHECK);
+                      kLRHasNotBeenSaved, SaveFPRegsMode::kIgnore,
+                      RememberedSetAction::kOmit, SmiCheck::kOmit);
 }
 
 static void LeaveInterpreterFrame(MacroAssembler* masm, Register scratch1,
@@ -1042,8 +1039,8 @@ void Builtins::Generate_BaselineOutOfLinePrologue(MacroAssembler* masm) {
   // Need a few extra registers
   temps.Include(r8, r9);
 
-  auto descriptor = Builtins::CallInterfaceDescriptorFor(
-      Builtins::kBaselineOutOfLinePrologue);
+  auto descriptor =
+      Builtins::CallInterfaceDescriptorFor(Builtin::kBaselineOutOfLinePrologue);
   Register closure = descriptor.GetRegisterParameter(
       BaselineOutOfLinePrologueDescriptor::kClosure);
   // Load the feedback vector from the closure.
@@ -1051,7 +1048,7 @@ void Builtins::Generate_BaselineOutOfLinePrologue(MacroAssembler* masm) {
   __ ldr(feedback_vector,
          FieldMemOperand(closure, JSFunction::kFeedbackCellOffset));
   __ ldr(feedback_vector, FieldMemOperand(feedback_vector, Cell::kValueOffset));
-  if (__ emit_debug_code()) {
+  if (FLAG_debug_code) {
     UseScratchRegisterScope temps(masm);
     Register scratch = temps.Acquire();
     __ CompareObjectType(feedback_vector, scratch, scratch,
@@ -1124,7 +1121,7 @@ void Builtins::Generate_BaselineOutOfLinePrologue(MacroAssembler* masm) {
 
   // Baseline code frames store the feedback vector where interpreter would
   // store the bytecode offset.
-  if (__ emit_debug_code()) {
+  if (FLAG_debug_code) {
     UseScratchRegisterScope temps(masm);
     Register scratch = temps.Acquire();
     __ CompareObjectType(feedback_vector, scratch, scratch,
@@ -1156,6 +1153,7 @@ void Builtins::Generate_BaselineOutOfLinePrologue(MacroAssembler* masm) {
   }
 
   // Do "fast" return to the caller pc in lr.
+  __ LoadRoot(kInterpreterAccumulatorRegister, RootIndex::kUndefinedValue);
   __ Ret();
 
   __ bind(&has_optimized_code_or_marker);
@@ -1186,6 +1184,7 @@ void Builtins::Generate_BaselineOutOfLinePrologue(MacroAssembler* masm) {
     __ RecordComment("]");
   }
 
+  __ LoadRoot(kInterpreterAccumulatorRegister, RootIndex::kUndefinedValue);
   __ Ret();
 }
 
@@ -1646,7 +1645,7 @@ static void Generate_InterpreterEnterBytecode(MacroAssembler* masm) {
   __ Jump(kJavaScriptCallCodeStartRegister);
 }
 
-void Builtins::Generate_InterpreterEnterBytecodeAdvance(MacroAssembler* masm) {
+void Builtins::Generate_InterpreterEnterAtNextBytecode(MacroAssembler* masm) {
   // Get bytecode array and bytecode offset from the stack frame.
   __ ldr(kInterpreterBytecodeArrayRegister,
          MemOperand(fp, InterpreterFrameConstants::kBytecodeArrayFromFp));
@@ -1691,7 +1690,7 @@ void Builtins::Generate_InterpreterEnterBytecodeAdvance(MacroAssembler* masm) {
   __ Abort(AbortReason::kInvalidBytecodeAdvance);
 }
 
-void Builtins::Generate_InterpreterEnterBytecodeDispatch(MacroAssembler* masm) {
+void Builtins::Generate_InterpreterEnterAtBytecode(MacroAssembler* masm) {
   Generate_InterpreterEnterBytecode(masm);
 }
 
@@ -1841,6 +1840,8 @@ void Builtins::Generate_InterpreterOnStackReplacement(MacroAssembler* masm) {
 }
 
 void Builtins::Generate_BaselineOnStackReplacement(MacroAssembler* masm) {
+  __ ldr(kContextRegister,
+         MemOperand(fp, BaselineFrameConstants::kContextOffset));
   return OnStackReplacement(masm, false);
 }
 
@@ -2009,6 +2010,7 @@ void Builtins::Generate_ReflectConstruct(MacroAssembler* masm) {
 }
 
 // static
+// TODO(v8:11615): Observe Code::kMaxArguments in CallOrConstructVarargs
 void Builtins::Generate_CallOrConstructVarargs(MacroAssembler* masm,
                                                Handle<Code> code) {
   // ----------- S t a t e -------------
@@ -2020,7 +2022,7 @@ void Builtins::Generate_CallOrConstructVarargs(MacroAssembler* masm,
   // -----------------------------------
   Register scratch = r8;
 
-  if (masm->emit_debug_code()) {
+  if (FLAG_debug_code) {
     // Allow r2 to be a FixedArray, or a FixedDoubleArray if r4 == 0.
     Label ok, fail;
     __ AssertNotSmi(r2);
@@ -2278,7 +2280,7 @@ void Builtins::Generate_CallFunction(MacroAssembler* masm,
 
   __ ldrh(r2,
           FieldMemOperand(r2, SharedFunctionInfo::kFormalParameterCountOffset));
-  __ InvokeFunctionCode(r1, no_reg, r2, r0, JUMP_FUNCTION);
+  __ InvokeFunctionCode(r1, no_reg, r2, r0, InvokeType::kJump);
 
   // The function is a "classConstructor", need to raise an exception.
   __ bind(&class_constructor);
@@ -2640,6 +2642,11 @@ void Builtins::Generate_GenericJSToWasmWrapper(MacroAssembler* masm) {
   // TODO(v8:10701): Implement for this platform.
   __ Trap();
 }
+
+void Builtins::Generate_WasmOnStackReplace(MacroAssembler* masm) {
+  // Only needed on x64.
+  __ Trap();
+}
 #endif  // V8_ENABLE_WEBASSEMBLY
 
 void Builtins::Generate_CEntry(MacroAssembler* masm, int result_size,
@@ -2652,12 +2659,12 @@ void Builtins::Generate_CEntry(MacroAssembler* masm, int result_size,
   // sp: stack pointer  (restored as callee's sp after C call)
   // cp: current context  (C callee-saved)
   //
-  // If argv_mode == kArgvInRegister:
+  // If argv_mode == ArgvMode::kRegister:
   // r2: pointer to the first argument
 
   __ mov(r5, Operand(r1));
 
-  if (argv_mode == kArgvInRegister) {
+  if (argv_mode == ArgvMode::kRegister) {
     // Move argv into the correct register.
     __ mov(r1, Operand(r2));
   } else {
@@ -2669,7 +2676,7 @@ void Builtins::Generate_CEntry(MacroAssembler* masm, int result_size,
   // Enter the exit frame that transitions from JavaScript to C++.
   FrameScope scope(masm, StackFrame::MANUAL);
   __ EnterExitFrame(
-      save_doubles == kSaveFPRegs, 0,
+      save_doubles == SaveFPRegsMode::kSave, 0,
       builtin_exit_frame ? StackFrame::BUILTIN_EXIT : StackFrame::EXIT);
 
   // Store a copy of argc in callee-saved registers for later.
@@ -2726,12 +2733,12 @@ void Builtins::Generate_CEntry(MacroAssembler* masm, int result_size,
   // r0:r1: result
   // sp: stack pointer
   // fp: frame pointer
-  Register argc = argv_mode == kArgvInRegister
+  Register argc = argv_mode == ArgvMode::kRegister
                       // We don't want to pop arguments so set argc to no_reg.
                       ? no_reg
                       // Callee-saved register r4 still holds argc.
                       : r4;
-  __ LeaveExitFrame(save_doubles == kSaveFPRegs, argc);
+  __ LeaveExitFrame(save_doubles == SaveFPRegsMode::kSave, argc);
   __ mov(pc, lr);
 
   // Handling of exception.
@@ -2841,7 +2848,7 @@ void Builtins::Generate_DoubleToI(MacroAssembler* masm) {
   // If we reach this code, 30 <= exponent <= 83.
   // `TryInlineTruncateDoubleToI` above will have truncated any double with an
   // exponent lower than 30.
-  if (masm->emit_debug_code()) {
+  if (FLAG_debug_code) {
     // Scratch is exponent - 1.
     __ cmp(scratch, Operand(30 - 1));
     __ Check(ge, AbortReason::kUnexpectedValue);
@@ -2957,7 +2964,7 @@ void CallApiFunctionAndReturn(MacroAssembler* masm, Register function_address,
   // No more valid handles (the result handle was the last one). Restore
   // previous handle scope.
   __ str(r4, MemOperand(r9, kNextOffset));
-  if (__ emit_debug_code()) {
+  if (FLAG_debug_code) {
     __ ldr(r1, MemOperand(r9, kLevelOffset));
     __ cmp(r1, r6);
     __ Check(eq, AbortReason::kUnexpectedLevelAfterReturnFromApiCall);
@@ -3627,7 +3634,7 @@ void Builtins::Generate_DynamicCheckMapsTrampoline(MacroAssembler* masm) {
   // FLAG_debug_code is enabled CSA checks will call C function and so we need
   // to save all CallerSaved registers too.
   if (FLAG_debug_code) registers |= kCallerSaved;
-  __ SaveRegisters(registers);
+  __ MaybeSaveRegisters(registers);
 
   // Load the immediate arguments from the deopt exit to pass to the builtin.
   Register slot_arg =
@@ -3648,7 +3655,7 @@ void Builtins::Generate_DynamicCheckMapsTrampoline(MacroAssembler* masm) {
   __ cmp_raw_immediate(r0, static_cast<int>(DynamicCheckMapsStatus::kSuccess));
   __ b(ne, &deopt);
 
-  __ RestoreRegisters(registers);
+  __ MaybeRestoreRegisters(registers);
   __ LeaveFrame(StackFrame::INTERNAL);
   __ Ret();
 
@@ -3660,14 +3667,14 @@ void Builtins::Generate_DynamicCheckMapsTrampoline(MacroAssembler* masm) {
     __ cmp_raw_immediate(r0, static_cast<int>(DynamicCheckMapsStatus::kDeopt));
     __ Assert(eq, AbortReason::kUnexpectedDynamicCheckMapsStatus);
   }
-  __ RestoreRegisters(registers);
+  __ MaybeRestoreRegisters(registers);
   __ LeaveFrame(StackFrame::INTERNAL);
   Handle<Code> deopt_eager = masm->isolate()->builtins()->builtin_handle(
       Deoptimizer::GetDeoptimizationEntry(DeoptimizeKind::kEager));
   __ Jump(deopt_eager, RelocInfo::CODE_TARGET);
 
   __ bind(&bailout);
-  __ RestoreRegisters(registers);
+  __ MaybeRestoreRegisters(registers);
   __ LeaveFrame(StackFrame::INTERNAL);
   Handle<Code> deopt_bailout = masm->isolate()->builtins()->builtin_handle(
       Deoptimizer::GetDeoptimizationEntry(DeoptimizeKind::kBailout));

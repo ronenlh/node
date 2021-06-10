@@ -65,6 +65,13 @@ void V8::TearDown() {
   FlagList::ResetAllFlags();  // Frees memory held by string arguments.
 }
 
+#define DISABLE_FLAG(flag)                                                    \
+  if (FLAG_##flag) {                                                          \
+    PrintF(stderr,                                                            \
+           "Warning: disabling flag --" #flag " due to conflicting flags\n"); \
+    FLAG_##flag = false;                                                      \
+  }
+
 void V8::InitializeOncePerProcessImpl() {
   // Update logging information before enforcing flag implications.
   bool* log_all_flags[] = {&FLAG_turbo_profiling_log_builtins,
@@ -129,14 +136,34 @@ void V8::InitializeOncePerProcessImpl() {
   // memory.
 #if V8_ENABLE_WEBASSEMBLY
   if (FLAG_jitless && !FLAG_correctness_fuzzer_suppressions) {
-    FLAG_expose_wasm = false;
+    DISABLE_FLAG(expose_wasm);
   }
 #endif
+
+  // When fuzzing and concurrent compilation is enabled, disable Turbofan
+  // tracing flags since reading/printing heap state is not thread-safe and
+  // leads to false positives on TSAN bots.
+  // TODO(chromium:1205289): Teach relevant fuzzers to not pass TF tracing
+  // flags instead, and remove this section.
+  if (FLAG_fuzzing && FLAG_concurrent_recompilation) {
+    DISABLE_FLAG(trace_turbo);
+    DISABLE_FLAG(trace_turbo_graph);
+    DISABLE_FLAG(trace_turbo_scheduled);
+    DISABLE_FLAG(trace_turbo_reduction);
+    DISABLE_FLAG(trace_turbo_trimming);
+    DISABLE_FLAG(trace_turbo_jt);
+    DISABLE_FLAG(trace_turbo_ceq);
+    DISABLE_FLAG(trace_turbo_loop);
+    DISABLE_FLAG(trace_turbo_alloc);
+    DISABLE_FLAG(trace_all_uses);
+    DISABLE_FLAG(trace_representation);
+    DISABLE_FLAG(trace_turbo_stack_accesses);
+  }
 
   if (FLAG_regexp_interpret_all && FLAG_regexp_tier_up) {
     // Turning off the tier-up strategy, because the --regexp-interpret-all and
     // --regexp-tier-up flags are incompatible.
-    FLAG_regexp_tier_up = false;
+    DISABLE_FLAG(regexp_tier_up);
   }
 
   // The --jitless and --interpreted-frames-native-stack flags are incompatible
@@ -151,6 +178,7 @@ void V8::InitializeOncePerProcessImpl() {
 #if defined(V8_USE_PERFETTO)
   if (perfetto::Tracing::IsInitialized()) TrackEvent::Register();
 #endif
+  IsolateAllocator::InitializeOncePerProcess();
   Isolate::InitializeOncePerProcess();
 
 #if defined(USE_SIMULATOR)
@@ -163,6 +191,8 @@ void V8::InitializeOncePerProcessImpl() {
 #if V8_ENABLE_WEBASSEMBLY
   wasm::WasmEngine::InitializeOncePerProcess();
 #endif  // V8_ENABLE_WEBASSEMBLY
+
+  ExternalReferenceTable::InitializeOncePerProcess();
 }
 
 void V8::InitializeOncePerProcess() {

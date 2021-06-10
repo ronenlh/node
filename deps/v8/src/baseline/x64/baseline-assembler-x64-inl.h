@@ -7,7 +7,6 @@
 
 #include "src/base/macros.h"
 #include "src/baseline/baseline-assembler.h"
-#include "src/codegen/interface-descriptors.h"
 #include "src/codegen/x64/register-x64.h"
 
 namespace v8 {
@@ -122,25 +121,25 @@ void BaselineAssembler::JumpIfNotSmi(Register value, Label* target,
   __ JumpIfNotSmi(value, target, distance);
 }
 
-void BaselineAssembler::CallBuiltin(Builtins::Name builtin) {
+void BaselineAssembler::CallBuiltin(Builtin builtin) {
   if (masm()->options().short_builtin_calls) {
     // Generate pc-relative call.
     __ CallBuiltin(builtin);
   } else {
     __ RecordCommentForOffHeapTrampoline(builtin);
-    __ Call(__ EntryFromBuiltinIndexAsOperand(builtin));
-    if (FLAG_code_comments) __ RecordComment("]");
+    __ Call(__ EntryFromBuiltinAsOperand(builtin));
+    __ RecordComment("]");
   }
 }
 
-void BaselineAssembler::TailCallBuiltin(Builtins::Name builtin) {
+void BaselineAssembler::TailCallBuiltin(Builtin builtin) {
   if (masm()->options().short_builtin_calls) {
     // Generate pc-relative jump.
     __ TailCallBuiltin(builtin);
   } else {
     __ RecordCommentForOffHeapTrampoline(builtin);
-    __ Jump(__ EntryFromBuiltinIndexAsOperand(builtin));
-    if (FLAG_code_comments) __ RecordComment("]");
+    __ Jump(__ EntryFromBuiltinAsOperand(builtin));
+    __ RecordComment("]");
   }
 }
 
@@ -160,7 +159,7 @@ void BaselineAssembler::CmpObjectType(Register object,
 }
 void BaselineAssembler::CmpInstanceType(Register map,
                                         InstanceType instance_type) {
-  if (emit_debug_code()) {
+  if (FLAG_debug_code) {
     __ AssertNotSmi(map);
     __ CmpObjectType(map, MAP_TYPE, kScratchRegister);
     __ Assert(equal, AbortReason::kUnexpectedValue);
@@ -201,7 +200,7 @@ void BaselineAssembler::Move(Register output, Handle<HeapObject> value) {
   __ Move(output, value);
 }
 void BaselineAssembler::Move(Register output, int32_t value) {
-  __ Move(output, Immediate(value));
+  __ Move(output, value);
 }
 void BaselineAssembler::MoveMaybeSmi(Register output, Register source) {
   __ mov_tagged(output, source);
@@ -319,14 +318,11 @@ void BaselineAssembler::StoreTaggedSignedField(Register target, int offset,
 }
 void BaselineAssembler::StoreTaggedFieldWithWriteBarrier(Register target,
                                                          int offset,
-
                                                          Register value) {
-  BaselineAssembler::ScratchRegisterScope scratch_scope(this);
-  Register scratch = scratch_scope.AcquireScratch();
-  DCHECK_NE(target, scratch);
-  DCHECK_NE(value, scratch);
+  Register scratch = WriteBarrierDescriptor::SlotAddressRegister();
+  DCHECK(!AreAliased(target, value, scratch));
   __ StoreTaggedField(FieldOperand(target, offset), value);
-  __ RecordWriteField(target, offset, value, scratch, kDontSaveFPRegs);
+  __ RecordWriteField(target, offset, value, scratch, SaveFPRegsMode::kIgnore);
 }
 void BaselineAssembler::StoreTaggedFieldNoWriteBarrier(Register target,
                                                        int offset,

@@ -166,8 +166,8 @@ bool SharedFunctionInfo::needs_script_context() const {
   return is_script() && scope_info().ContextLocalCount() > 0;
 }
 
-template <typename LocalIsolate>
-AbstractCode SharedFunctionInfo::abstract_code(LocalIsolate* isolate) {
+template <typename IsolateT>
+AbstractCode SharedFunctionInfo::abstract_code(IsolateT* isolate) {
   // TODO(v8:11429): Decide if this return bytecode or baseline code, when the
   // latter is present.
   if (HasBytecodeArray()) {
@@ -186,9 +186,8 @@ int SharedFunctionInfo::function_token_position() const {
   }
 }
 
-template <typename LocalIsolate>
-bool SharedFunctionInfo::AreSourcePositionsAvailable(
-    LocalIsolate* isolate) const {
+template <typename IsolateT>
+bool SharedFunctionInfo::AreSourcePositionsAvailable(IsolateT* isolate) const {
   if (FLAG_enable_lazy_source_positions) {
     return !HasBytecodeArray() ||
            GetBytecodeArray(isolate).HasSourcePositionTable();
@@ -196,9 +195,9 @@ bool SharedFunctionInfo::AreSourcePositionsAvailable(
   return true;
 }
 
-template <typename LocalIsolate>
+template <typename IsolateT>
 SharedFunctionInfo::Inlineability SharedFunctionInfo::GetInlineability(
-    LocalIsolate* isolate) const {
+    IsolateT* isolate) const {
   if (!script().IsScript()) return kHasNoScript;
 
   if (GetIsolate()->is_precise_binary_code_coverage() &&
@@ -235,9 +234,6 @@ BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags2,
                     has_static_private_methods_or_accessors,
                     SharedFunctionInfo::HasStaticPrivateMethodsOrAccessorsBit)
 
-BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags2, may_have_cached_code,
-                    SharedFunctionInfo::MayHaveCachedCodeBit)
-
 BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags, syntax_kind,
                     SharedFunctionInfo::FunctionSyntaxKindBits)
 
@@ -263,9 +259,8 @@ BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags, has_reported_binary_coverage,
 
 BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags, is_toplevel,
                     SharedFunctionInfo::IsTopLevelBit)
-BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags,
-                    is_oneshot_iife_or_properties_are_final,
-                    SharedFunctionInfo::IsOneshotIifeOrPropertiesAreFinalBit)
+BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags, properties_are_final,
+                    SharedFunctionInfo::PropertiesAreFinalBit)
 BIT_FIELD_ACCESSORS(SharedFunctionInfo, flags,
                     private_name_lookup_skips_outer_class,
                     SharedFunctionInfo::PrivateNameLookupSkipsOuterClassBit)
@@ -319,7 +314,7 @@ void SharedFunctionInfo::CalculateConstructAsBuiltin() {
   bool uses_builtins_construct_stub = false;
   if (HasBuiltinId()) {
     int id = builtin_id();
-    if (id != Builtins::kCompileLazy && id != Builtins::kEmptyFunction) {
+    if (id != Builtin::kCompileLazy && id != Builtin::kEmptyFunction) {
       uses_builtins_construct_stub = true;
     }
   } else if (IsApiFunction()) {
@@ -449,13 +444,12 @@ void SharedFunctionInfo::set_feedback_metadata(FeedbackMetadata value,
 
 bool SharedFunctionInfo::is_compiled() const {
   Object data = function_data(kAcquireLoad);
-  return data != Smi::FromEnum(Builtins::kCompileLazy) &&
+  return data != Smi::FromEnum(Builtin::kCompileLazy) &&
          !data.IsUncompiledData();
 }
 
-template <typename LocalIsolate>
-IsCompiledScope SharedFunctionInfo::is_compiled_scope(
-    LocalIsolate* isolate) const {
+template <typename IsolateT>
+IsCompiledScope SharedFunctionInfo::is_compiled_scope(IsolateT* isolate) const {
   return IsCompiledScope(*this, isolate);
 }
 
@@ -497,10 +491,9 @@ bool SharedFunctionInfo::HasBytecodeArray() const {
          data.IsBaselineData();
 }
 
-template <typename LocalIsolate>
-BytecodeArray SharedFunctionInfo::GetBytecodeArray(
-    LocalIsolate* isolate) const {
-  SharedMutexGuardIfOffThread<LocalIsolate, base::kShared> mutex_guard(
+template <typename IsolateT>
+BytecodeArray SharedFunctionInfo::GetBytecodeArray(IsolateT* isolate) const {
+  SharedMutexGuardIfOffThread<IsolateT, base::kShared> mutex_guard(
       GetIsolate()->shared_function_info_access(), isolate);
 
   DCHECK(HasBytecodeArray());
@@ -556,7 +549,7 @@ void SharedFunctionInfo::SetActiveBytecodeArray(BytecodeArray bytecode) {
 }
 
 void SharedFunctionInfo::set_bytecode_array(BytecodeArray bytecode) {
-  DCHECK(function_data(kAcquireLoad) == Smi::FromEnum(Builtins::kCompileLazy) ||
+  DCHECK(function_data(kAcquireLoad) == Smi::FromEnum(Builtin::kCompileLazy) ||
          HasUncompiledData());
   set_function_data(bytecode, kReleaseStore);
 }
@@ -648,7 +641,7 @@ AsmWasmData SharedFunctionInfo::asm_wasm_data() const {
 }
 
 void SharedFunctionInfo::set_asm_wasm_data(AsmWasmData data) {
-  DCHECK(function_data(kAcquireLoad) == Smi::FromEnum(Builtins::kCompileLazy) ||
+  DCHECK(function_data(kAcquireLoad) == Smi::FromEnum(Builtin::kCompileLazy) ||
          HasUncompiledData() || HasAsmWasmData());
   set_function_data(data, kReleaseStore);
 }
@@ -697,7 +690,7 @@ UncompiledData SharedFunctionInfo::uncompiled_data() const {
 }
 
 void SharedFunctionInfo::set_uncompiled_data(UncompiledData uncompiled_data) {
-  DCHECK(function_data(kAcquireLoad) == Smi::FromEnum(Builtins::kCompileLazy) ||
+  DCHECK(function_data(kAcquireLoad) == Smi::FromEnum(Builtin::kCompileLazy) ||
          HasUncompiledData());
   DCHECK(uncompiled_data.IsUncompiledData());
   set_function_data(uncompiled_data, kReleaseStore);
@@ -715,7 +708,7 @@ SharedFunctionInfo::uncompiled_data_with_preparse_data() const {
 
 void SharedFunctionInfo::set_uncompiled_data_with_preparse_data(
     UncompiledDataWithPreparseData uncompiled_data_with_preparse_data) {
-  DCHECK(function_data(kAcquireLoad) == Smi::FromEnum(Builtins::kCompileLazy));
+  DCHECK(function_data(kAcquireLoad) == Smi::FromEnum(Builtin::kCompileLazy));
   DCHECK(uncompiled_data_with_preparse_data.IsUncompiledDataWithPreparseData());
   set_function_data(uncompiled_data_with_preparse_data, kReleaseStore);
 }
@@ -739,8 +732,8 @@ void SharedFunctionInfo::ClearPreparseData() {
                 UncompiledDataWithPreparseData::kSize);
   STATIC_ASSERT(UncompiledDataWithoutPreparseData::kSize ==
                 UncompiledData::kHeaderSize);
-  data.synchronized_set_map(
-      GetReadOnlyRoots().uncompiled_data_without_preparse_data_map());
+  data.set_map(GetReadOnlyRoots().uncompiled_data_without_preparse_data_map(),
+               kReleaseStore);
 
   // Fill the remaining space with filler.
   heap->CreateFillerObjectAt(
@@ -849,26 +842,14 @@ bool SharedFunctionInfo::is_class_constructor() const {
   return IsClassConstructorBit::decode(flags());
 }
 
-bool SharedFunctionInfo::is_oneshot_iife() const {
-  bool bit = is_oneshot_iife_or_properties_are_final();
-  return bit && !is_class_constructor();
-}
-
-void SharedFunctionInfo::set_is_oneshot_iife(bool value) {
-  DCHECK(!value || !is_class_constructor());
-  if (!is_class_constructor()) {
-    set_is_oneshot_iife_or_properties_are_final(value);
-  }
-}
-
 void SharedFunctionInfo::set_are_properties_final(bool value) {
   if (is_class_constructor()) {
-    set_is_oneshot_iife_or_properties_are_final(value);
+    set_properties_are_final(value);
   }
 }
 
 bool SharedFunctionInfo::are_properties_final() const {
-  bool bit = is_oneshot_iife_or_properties_are_final();
+  bool bit = properties_are_final();
   return bit && is_class_constructor();
 }
 

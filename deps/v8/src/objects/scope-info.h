@@ -31,6 +31,18 @@ class Scope;
 class StringSet;
 class Zone;
 
+struct VariableLookupResult {
+  int context_index;
+  int slot_index;
+  // repl_mode flag is needed to disable inlining of 'const' variables in REPL
+  // mode.
+  bool is_repl_mode;
+  IsStaticFlag is_static_flag;
+  VariableMode mode;
+  InitializationFlag init_flag;
+  MaybeAssignedFlag maybe_assigned_flag;
+};
+
 // ScopeInfo represents information about different scopes of a source
 // program  and the allocation of the scope's variables. Scope information
 // is stored in a compressed form in ScopeInfo objects and is used
@@ -154,9 +166,7 @@ class ScopeInfo : public TorqueGeneratedScopeInfo<ScopeInfo, HeapObject> {
   // If the slot is present and mode != nullptr, sets *mode to the corresponding
   // mode for that variable.
   static int ContextSlotIndex(ScopeInfo scope_info, String name,
-                              VariableMode* mode, InitializationFlag* init_flag,
-                              MaybeAssignedFlag* maybe_assigned_flag,
-                              IsStaticFlag* is_static_flag);
+                              VariableLookupResult* lookup_result);
 
   // Lookup metadata of a MODULE-allocated variable.  Return 0 if there is no
   // module variable with the given name (the index value of a MODULE variable
@@ -213,19 +223,18 @@ class ScopeInfo : public TorqueGeneratedScopeInfo<ScopeInfo, HeapObject> {
   // closest outer class when resolving private names.
   bool PrivateNameLookupSkipsOuterClass() const;
 
-  // REPL mode scopes allow re-declaraction of let variables. They come from
-  // debug evaluate but are different to IsDebugEvaluateScope().
+  // REPL mode scopes allow re-declaraction of let and const variables. They
+  // come from debug evaluate but are different to IsDebugEvaluateScope().
   bool IsReplModeScope() const;
 
 #ifdef DEBUG
   bool Equals(ScopeInfo other) const;
 #endif
 
-  template <typename LocalIsolate>
-  static Handle<ScopeInfo> Create(LocalIsolate* isolate, Zone* zone,
-                                  Scope* scope,
+  template <typename IsolateT>
+  static Handle<ScopeInfo> Create(IsolateT* isolate, Zone* zone, Scope* scope,
                                   MaybeHandle<ScopeInfo> outer_scope);
-  static Handle<ScopeInfo> CreateForWithScope(
+  V8_EXPORT_PRIVATE static Handle<ScopeInfo> CreateForWithScope(
       Isolate* isolate, MaybeHandle<ScopeInfo> outer_scope);
   V8_EXPORT_PRIVATE static Handle<ScopeInfo> CreateForEmptyFunction(
       Isolate* isolate);
@@ -314,7 +323,7 @@ class ScopeInfo : public TorqueGeneratedScopeInfo<ScopeInfo, HeapObject> {
   }
   static constexpr int ConvertOffsetToIndex(int offset) {
     int index = (offset - HeapObject::kHeaderSize) / kTaggedSize;
-    CONSTEXPR_DCHECK(OffsetOfElementAt(index) == offset);
+    DCHECK_EQ(OffsetOfElementAt(index), offset);
     return index;
   }
 

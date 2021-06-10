@@ -158,21 +158,21 @@ class OutOfLineRecordWrite final : public OutOfLineCode {
 #endif  // V8_ENABLE_WEBASSEMBLY
         must_save_lr_(!gen->frame_access_state()->has_frame()),
         zone_(gen->zone()) {
+    DCHECK(!AreAliased(object, index, scratch0, scratch1));
+    DCHECK(!AreAliased(value, index, scratch0, scratch1));
   }
 
   void Generate() final {
-    if (mode_ > RecordWriteMode::kValueIsPointer) {
-      __ JumpIfSmi(value_, exit());
-    }
     __ CheckPageFlag(value_, scratch0_,
                      MemoryChunk::kPointersToHereAreInterestingMask, eq,
                      exit());
     __ Addu(scratch1_, object_, index_);
     RememberedSetAction const remembered_set_action =
-        mode_ > RecordWriteMode::kValueIsMap ? EMIT_REMEMBERED_SET
-                                             : OMIT_REMEMBERED_SET;
-    SaveFPRegsMode const save_fp_mode =
-        frame()->DidAllocateDoubleRegisters() ? kSaveFPRegs : kDontSaveFPRegs;
+        mode_ > RecordWriteMode::kValueIsMap ? RememberedSetAction::kEmit
+                                             : RememberedSetAction::kOmit;
+    SaveFPRegsMode const save_fp_mode = frame()->DidAllocateDoubleRegisters()
+                                            ? SaveFPRegsMode::kSave
+                                            : SaveFPRegsMode::kIgnore;
     if (must_save_lr_) {
       // We need to save and restore ra if the frame was elided.
       __ Push(ra);
@@ -185,12 +185,13 @@ class OutOfLineRecordWrite final : public OutOfLineCode {
       // A direct call to a wasm runtime stub defined in this module.
       // Just encode the stub index. This will be patched when the code
       // is added to the native module and copied into wasm code space.
-      __ CallRecordWriteStub(object_, scratch1_, remembered_set_action,
-                             save_fp_mode, wasm::WasmCode::kRecordWrite);
+      __ CallRecordWriteStubSaveRegisters(object_, scratch1_,
+                                          remembered_set_action, save_fp_mode,
+                                          StubCallMode::kCallWasmRuntimeStub);
 #endif  // V8_ENABLE_WEBASSEMBLY
     } else {
-      __ CallRecordWriteStub(object_, scratch1_, remembered_set_action,
-                             save_fp_mode);
+      __ CallRecordWriteStubSaveRegisters(object_, scratch1_,
+                                          remembered_set_action, save_fp_mode);
     }
     if (must_save_lr_) {
       __ Pop(ra);
@@ -373,10 +374,10 @@ void EmitWordLoadPoisoningIfNeeded(CodeGenerator* codegen,
     } else {                                                                   \
       FrameScope scope(tasm(), StackFrame::MANUAL);                            \
       __ Addu(a0, i.InputRegister(0), i.InputRegister(1));                     \
-      __ PushCallerSaved(kDontSaveFPRegs, v0, v1);                             \
+      __ PushCallerSaved(SaveFPRegsMode::kIgnore, v0, v1);                     \
       __ PrepareCallCFunction(3, 0, kScratchReg);                              \
       __ CallCFunction(ExternalReference::external(), 3, 0);                   \
-      __ PopCallerSaved(kDontSaveFPRegs, v0, v1);                              \
+      __ PopCallerSaved(SaveFPRegsMode::kIgnore, v0, v1);                      \
     }                                                                          \
   } while (0)
 
@@ -403,10 +404,10 @@ void EmitWordLoadPoisoningIfNeeded(CodeGenerator* codegen,
     } else {                                                                   \
       FrameScope scope(tasm(), StackFrame::MANUAL);                            \
       __ Addu(a0, i.InputRegister(0), i.InputRegister(1));                     \
-      __ PushCallerSaved(kDontSaveFPRegs, v0, v1);                             \
+      __ PushCallerSaved(SaveFPRegsMode::kIgnore, v0, v1);                     \
       __ PrepareCallCFunction(3, 0, kScratchReg);                              \
       __ CallCFunction(ExternalReference::external(), 3, 0);                   \
-      __ PopCallerSaved(kDontSaveFPRegs, v0, v1);                              \
+      __ PopCallerSaved(SaveFPRegsMode::kIgnore, v0, v1);                      \
     }                                                                          \
   } while (0)
 
@@ -494,8 +495,8 @@ void EmitWordLoadPoisoningIfNeeded(CodeGenerator* codegen,
     __ Ll(i.TempRegister(2), MemOperand(i.TempRegister(0), 0));                \
     __ ExtractBits(i.OutputRegister(0), i.TempRegister(2), i.TempRegister(1),  \
                    size, sign_extend);                                         \
-    __ ExtractBits(i.InputRegister(2), i.InputRegister(2), i.TempRegister(1),  \
-                   size, sign_extend);                                         \
+    __ ExtractBits(i.InputRegister(2), i.InputRegister(2), zero_reg, size,     \
+                   sign_extend);                                               \
     __ BranchShort(&exit, ne, i.InputRegister(2),                              \
                    Operand(i.OutputRegister(0)));                              \
     __ InsertBits(i.TempRegister(2), i.InputRegister(3), i.TempRegister(1),    \
@@ -746,7 +747,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArchSaveCallerRegisters: {
       fp_mode_ =
           static_cast<SaveFPRegsMode>(MiscField::decode(instr->opcode()));
-      DCHECK(fp_mode_ == kDontSaveFPRegs || fp_mode_ == kSaveFPRegs);
+      DCHECK(fp_mode_ == SaveFPRegsMode::kIgnore ||
+             fp_mode_ == SaveFPRegsMode::kSave);
       // kReturnRegister0 should have been saved before entering the stub.
       int bytes = __ PushCallerSaved(fp_mode_, kReturnRegister0);
       DCHECK(IsAligned(bytes, kSystemPointerSize));
@@ -759,7 +761,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArchRestoreCallerRegisters: {
       DCHECK(fp_mode_ ==
              static_cast<SaveFPRegsMode>(MiscField::decode(instr->opcode())));
-      DCHECK(fp_mode_ == kDontSaveFPRegs || fp_mode_ == kSaveFPRegs);
+      DCHECK(fp_mode_ == SaveFPRegsMode::kIgnore ||
+             fp_mode_ == SaveFPRegsMode::kSave);
       // Don't overwrite the returned value.
       int bytes = __ PopCallerSaved(fp_mode_, kReturnRegister0);
       frame_access_state()->IncreaseSPDelta(-(bytes / kSystemPointerSize));
@@ -778,10 +781,10 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       bool isWasmCapiFunction =
           linkage()->GetIncomingDescriptor()->IsWasmCapiFunction();
       // from start_call to return address.
-      int offset = __ root_array_available() ? 68 : 80;
+      int offset = __ root_array_available() ? 64 : 88;
 #endif  // V8_ENABLE_WEBASSEMBLY
 #if V8_HOST_ARCH_MIPS
-      if (__ emit_debug_code()) {
+      if (FLAG_debug_code) {
         offset += 16;
       }
 #endif
@@ -848,9 +851,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         // We don't actually want to generate a pile of code for this, so just
         // claim there is a stack frame, without generating one.
         FrameScope scope(tasm(), StackFrame::NONE);
-        __ Call(
-            isolate()->builtins()->builtin_handle(Builtins::kAbortCSAAssert),
-            RelocInfo::CODE_TARGET);
+        __ Call(isolate()->builtins()->builtin_handle(Builtin::kAbortCSAAssert),
+                RelocInfo::CODE_TARGET);
       }
       __ stop();
       break;
@@ -873,9 +875,16 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArchRet:
       AssembleReturn(instr->InputAt(0));
       break;
-    case kArchStackPointerGreaterThan:
-      // Pseudo-instruction used for cmp/branch. No opcode emitted here.
+    case kArchStackPointerGreaterThan: {
+      Register lhs_register = sp;
+      uint32_t offset;
+      if (ShouldApplyOffsetToStackCheck(instr, &offset)) {
+        lhs_register = i.TempRegister(1);
+        __ Subu(lhs_register, sp, offset);
+      }
+      __ Sltu(i.TempRegister(0), i.InputRegister(0), lhs_register);
       break;
+    }
     case kArchStackCheckOffset:
       __ Move(i.OutputRegister(), Smi::FromInt(GetStackCheckOffset()));
       break;
@@ -906,6 +915,9 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
                                                    DetermineStubCallMode());
       __ Addu(kScratchReg, object, index);
       __ sw(value, MemOperand(kScratchReg));
+      if (mode > RecordWriteMode::kValueIsPointer) {
+        __ JumpIfSmi(value, ool->exit());
+      }
       __ CheckPageFlag(object, scratch0,
                        MemoryChunk::kPointersFromHereAreInterestingMask, ne,
                        ool->entry());
@@ -917,33 +929,12 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
           frame_access_state()->GetFrameOffset(i.InputInt32(0));
       Register base_reg = offset.from_stack_pointer() ? sp : fp;
       __ Addu(i.OutputRegister(), base_reg, Operand(offset.offset()));
-      int alignment = i.InputInt32(1);
-      DCHECK(alignment == 0 || alignment == 4 || alignment == 8 ||
-             alignment == 16);
-      if (FLAG_debug_code && alignment > 0) {
+      if (FLAG_debug_code > 0) {
         // Verify that the output_register is properly aligned
         __ And(kScratchReg, i.OutputRegister(),
                Operand(kSystemPointerSize - 1));
         __ Assert(eq, AbortReason::kAllocationIsNotDoubleAligned, kScratchReg,
                   Operand(zero_reg));
-      }
-
-      if (alignment == 2 * kSystemPointerSize) {
-        Label done;
-        __ Addu(kScratchReg, base_reg, Operand(offset.offset()));
-        __ And(kScratchReg, kScratchReg, Operand(alignment - 1));
-        __ BranchShort(&done, eq, kScratchReg, Operand(zero_reg));
-        __ Addu(i.OutputRegister(), i.OutputRegister(), kSystemPointerSize);
-        __ bind(&done);
-      } else if (alignment > 2 * kSystemPointerSize) {
-        Label done;
-        __ Addu(kScratchReg, base_reg, Operand(offset.offset()));
-        __ And(kScratchReg, kScratchReg, Operand(alignment - 1));
-        __ BranchShort(&done, eq, kScratchReg, Operand(zero_reg));
-        __ li(kScratchReg2, alignment);
-        __ Subu(kScratchReg2, kScratchReg2, Operand(kScratchReg));
-        __ Addu(i.OutputRegister(), i.OutputRegister(), kScratchReg2);
-        __ bind(&done);
       }
       break;
     }
@@ -1922,10 +1913,10 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       } else {
         FrameScope scope(tasm(), StackFrame::MANUAL);
         __ Addu(a0, i.InputRegister(0), i.InputRegister(1));
-        __ PushCallerSaved(kDontSaveFPRegs, v0, v1);
+        __ PushCallerSaved(SaveFPRegsMode::kIgnore, v0, v1);
         __ PrepareCallCFunction(1, 0, kScratchReg);
         __ CallCFunction(ExternalReference::atomic_pair_load_function(), 1, 0);
-        __ PopCallerSaved(kDontSaveFPRegs, v0, v1);
+        __ PopCallerSaved(SaveFPRegsMode::kIgnore, v0, v1);
       }
       break;
     }
@@ -1945,10 +1936,10 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       } else {
         FrameScope scope(tasm(), StackFrame::MANUAL);
         __ Addu(a0, i.InputRegister(0), i.InputRegister(1));
-        __ PushCallerSaved(kDontSaveFPRegs);
+        __ PushCallerSaved(SaveFPRegsMode::kIgnore);
         __ PrepareCallCFunction(3, 0, kScratchReg);
         __ CallCFunction(ExternalReference::atomic_pair_store_function(), 3, 0);
-        __ PopCallerSaved(kDontSaveFPRegs);
+        __ PopCallerSaved(SaveFPRegsMode::kIgnore);
       }
       break;
     }
@@ -1986,12 +1977,12 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         __ sync();
       } else {
         FrameScope scope(tasm(), StackFrame::MANUAL);
-        __ PushCallerSaved(kDontSaveFPRegs, v0, v1);
+        __ PushCallerSaved(SaveFPRegsMode::kIgnore, v0, v1);
         __ PrepareCallCFunction(3, 0, kScratchReg);
         __ Addu(a0, i.InputRegister(0), i.InputRegister(1));
         __ CallCFunction(ExternalReference::atomic_pair_exchange_function(), 3,
                          0);
-        __ PopCallerSaved(kDontSaveFPRegs, v0, v1);
+        __ PopCallerSaved(SaveFPRegsMode::kIgnore, v0, v1);
       }
       break;
     case kMipsWord32AtomicPairCompareExchange: {
@@ -2016,13 +2007,13 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         __ sync();
       } else {
         FrameScope scope(tasm(), StackFrame::MANUAL);
-        __ PushCallerSaved(kDontSaveFPRegs, v0, v1);
+        __ PushCallerSaved(SaveFPRegsMode::kIgnore, v0, v1);
         __ PrepareCallCFunction(5, 0, kScratchReg);
         __ addu(a0, i.InputRegister(0), i.InputRegister(1));
         __ sw(i.InputRegister(5), MemOperand(sp, 16));
         __ CallCFunction(
             ExternalReference::atomic_pair_compare_exchange_function(), 5, 0);
-        __ PopCallerSaved(kDontSaveFPRegs, v0, v1);
+        __ PopCallerSaved(SaveFPRegsMode::kIgnore, v0, v1);
       }
       break;
     }
@@ -3652,7 +3643,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     }
   }
   return kSuccess;
-}  // NOLINT(readability/fn_size)
+}
 
 void AssembleBranchToLabels(CodeGenerator* gen, TurboAssembler* tasm,
                             Instruction* instr, FlagsCondition condition,
@@ -3704,13 +3695,11 @@ void AssembleBranchToLabels(CodeGenerator* gen, TurboAssembler* tasm,
     __ Branch(tlabel, cc, i.InputRegister(0), i.InputOperand(1));
   } else if (instr->arch_opcode() == kArchStackPointerGreaterThan) {
     cc = FlagsConditionToConditionCmp(condition);
-    Register lhs_register = sp;
-    uint32_t offset;
-    if (gen->ShouldApplyOffsetToStackCheck(instr, &offset)) {
-      lhs_register = i.TempRegister(0);
-      __ Subu(lhs_register, sp, offset);
+    DCHECK((cc == ls) || (cc == hi));
+    if (cc == ls) {
+      __ xori(i.TempRegister(0), i.TempRegister(0), 1);
     }
-    __ Branch(tlabel, cc, lhs_register, Operand(i.InputRegister(0)));
+    __ Branch(tlabel, ne, i.TempRegister(0), Operand(zero_reg));
   } else if (instr->arch_opcode() == kMipsCmpS ||
              instr->arch_opcode() == kMipsCmpD) {
     bool predicate;
@@ -4020,6 +4009,13 @@ void CodeGenerator::AssembleArchBoolean(Instruction* instr,
       }
     }
     return;
+  } else if (instr->arch_opcode() == kArchStackPointerGreaterThan) {
+    cc = FlagsConditionToConditionCmp(condition);
+    DCHECK((cc == ls) || (cc == hi));
+    if (cc == ls) {
+      __ xori(i.OutputRegister(), i.TempRegister(0), 1);
+    }
+    return;
   } else {
     PrintF("AssembleArchBoolean Unimplemented arch_opcode is : %d\n",
            instr->arch_opcode());
@@ -4132,7 +4128,7 @@ void CodeGenerator::AssembleConstructFrame() {
     // frame is still on the stack. Optimized code uses OSR values directly from
     // the unoptimized frame. Thus, all that needs to be done is to allocate the
     // remaining stack slots.
-    if (FLAG_code_comments) __ RecordComment("-- OSR entrypoint --");
+    __ RecordComment("-- OSR entrypoint --");
     osr_pc_offset_ = __ pc_offset();
     required_slots -= osr_helper()->UnoptimizedFrameSlots();
     ResetSpeculationPoison();
@@ -4234,7 +4230,7 @@ void CodeGenerator::AssembleReturn(InstructionOperand* additional_pop_count) {
   if (parameter_slots != 0) {
     if (additional_pop_count->IsImmediate()) {
       DCHECK_EQ(g.ToConstant(additional_pop_count).ToInt32(), 0);
-    } else if (__ emit_debug_code()) {
+    } else if (FLAG_debug_code) {
       __ Assert(eq, AbortReason::kUnexpectedAdditionalPopValue,
                 g.ToRegister(additional_pop_count),
                 Operand(static_cast<int64_t>(0)));

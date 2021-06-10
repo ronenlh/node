@@ -60,7 +60,6 @@ class Zone;
   V(might_always_opt, bool, 1, _)                        \
   V(allow_natives_syntax, bool, 1, _)                    \
   V(allow_lazy_compile, bool, 1, _)                      \
-  V(is_oneshot_iife, bool, 1, _)                         \
   V(collect_source_positions, bool, 1, _)                \
   V(allow_harmony_top_level_await, bool, 1, _)           \
   V(is_repl_mode, bool, 1, _)
@@ -212,9 +211,9 @@ class V8_EXPORT_PRIVATE ParseInfo {
 
   ~ParseInfo();
 
-  template <typename LocalIsolate>
+  template <typename IsolateT>
   EXPORT_TEMPLATE_DECLARE(V8_EXPORT_PRIVATE)
-  Handle<Script> CreateScript(LocalIsolate* isolate, Handle<String> source,
+  Handle<Script> CreateScript(IsolateT* isolate, Handle<String> source,
                               MaybeHandle<FixedArray> maybe_wrapped_arguments,
                               ScriptOriginOptions origin_options,
                               NativesFlag natives = NOT_NATIVES_CODE);

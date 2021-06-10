@@ -311,6 +311,12 @@ class V8_EXPORT_PRIVATE AccessorAssembler : public CodeStubAssembler {
                              TVariable<MaybeObject>* var_handler,
                              Label* if_miss);
 
+  void TryMegaDOMCase(TNode<Object> lookup_start_object,
+                      TNode<Map> lookup_start_object_map,
+                      TVariable<MaybeObject>* var_handler, TNode<Object> vector,
+                      TNode<TaggedIndex> slot, Label* miss,
+                      ExitPoint* exit_point);
+
   // LoadIC implementation.
   void HandleLoadICHandlerCase(
       const LazyLoadICParameters* p, TNode<Object> handler, Label* miss,
@@ -348,6 +354,18 @@ class V8_EXPORT_PRIVATE AccessorAssembler : public CodeStubAssembler {
   void HandleLoadField(TNode<JSObject> holder, TNode<WordT> handler_word,
                        TVariable<Float64T>* var_double_value,
                        Label* rebox_double, Label* miss, ExitPoint* exit_point);
+
+#if V8_ENABLE_WEBASSEMBLY
+  void HandleLoadWasmField(TNode<WasmObject> holder,
+                           TNode<Int32T> wasm_value_type,
+                           TNode<IntPtrT> field_offset,
+                           TVariable<Float64T>* var_double_value,
+                           Label* rebox_double, ExitPoint* exit_point);
+
+  void HandleLoadWasmField(TNode<WasmObject> holder, TNode<WordT> handler_word,
+                           TVariable<Float64T>* var_double_value,
+                           Label* rebox_double, ExitPoint* exit_point);
+#endif  // V8_ENABLE_WEBASSEMBLY
 
   void EmitAccessCheck(TNode<Context> expected_native_context,
                        TNode<Context> context, TNode<Object> receiver,

@@ -69,6 +69,12 @@ class WasmCapiFunctionData;
 class WasmExportedFunctionData;
 class WasmJSFunctionData;
 class WeakCell;
+#if V8_ENABLE_WEBASSEMBLY
+namespace wasm {
+class StructType;
+class WasmValue;
+}  // namespace wasm
+#endif
 
 enum class SharedFlag : uint8_t;
 enum class InitializedFlag : uint8_t;
@@ -130,9 +136,6 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   V8_WARN_UNUSED_RESULT
   MaybeHandle<FixedArray> TryNewFixedArray(
       int length, AllocationType allocation = AllocationType::kYoung);
-
-  // Allocates an uninitialized fixed array. It must be filled by the caller.
-  Handle<FixedArray> NewUninitializedFixedArray(int length);
 
   // Allocates a closure feedback cell array whose feedback cells are
   // initialized with undefined values.
@@ -345,8 +348,7 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   Handle<Context> NewDebugEvaluateContext(Handle<Context> previous,
                                           Handle<ScopeInfo> scope_info,
                                           Handle<JSReceiver> extension,
-                                          Handle<Context> wrapped,
-                                          Handle<StringSet> blocklist);
+                                          Handle<Context> wrapped);
 
   // Create a block context.
   Handle<Context> NewBlockContext(Handle<Context> previous,
@@ -557,7 +559,24 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
 
 #if V8_ENABLE_WEBASSEMBLY
   Handle<WasmTypeInfo> NewWasmTypeInfo(Address type_address,
-                                       Handle<Map> opt_parent);
+                                       Handle<Map> opt_parent,
+                                       int instance_size_bytes);
+  Handle<WasmCapiFunctionData> NewWasmCapiFunctionData(
+      Address call_target, Handle<Foreign> embedder_data,
+      Handle<Code> wrapper_code,
+      Handle<PodArray<wasm::ValueType>> serialized_sig);
+  Handle<WasmExportedFunctionData> NewWasmExportedFunctionData(
+      Handle<Code> export_wrapper, Handle<WasmInstanceObject> instance,
+      Address call_target, Handle<Object> ref, int func_index,
+      Address sig_address, int wrapper_budget);
+  // {opt_call_target} is kNullAddress for JavaScript functions, and
+  // non-null for exported Wasm functions.
+  Handle<WasmJSFunctionData> NewWasmJSFunctionData(
+      Address opt_call_target, Handle<JSReceiver> callable, int return_count,
+      int parameter_count, Handle<PodArray<wasm::ValueType>> serialized_sig,
+      Handle<Code> wrapper_code);
+  Handle<WasmStruct> NewWasmStruct(const wasm::StructType* type,
+                                   wasm::WasmValue* args, Handle<Map> map);
 
   Handle<SharedFunctionInfo> NewSharedFunctionInfoForWasmExportedFunction(
       Handle<String> name, Handle<WasmExportedFunctionData> data);
@@ -732,7 +751,8 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   Handle<LoadHandler> NewLoadHandler(
       int data_count, AllocationType allocation = AllocationType::kOld);
   Handle<StoreHandler> NewStoreHandler(int data_count);
-
+  Handle<MegaDomHandler> NewMegaDomHandler(MaybeObjectHandle accessor,
+                                           MaybeObjectHandle context);
   Handle<RegExpMatchInfo> NewRegExpMatchInfo();
 
   // Creates a new FixedArray that holds the data associated with the
@@ -828,7 +848,7 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
     }
 
     CodeBuilder& set_builtin_index(int32_t builtin_index) {
-      DCHECK_IMPLIES(builtin_index != Builtins::kNoBuiltinId,
+      DCHECK_IMPLIES(builtin_index != Builtin::kNoBuiltinId,
                      !CodeKindIsJSFunction(kind_));
       builtin_index_ = builtin_index;
       return *this;
@@ -900,7 +920,7 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
     const CodeKind kind_;
 
     MaybeHandle<Object> self_reference_;
-    int32_t builtin_index_ = Builtins::kNoBuiltinId;
+    int32_t builtin_index_ = Builtin::kNoBuiltinId;
     uint32_t inlined_bytecode_size_ = 0;
     int32_t kind_specific_flags_ = 0;
     // Either source_position_table for non-baseline code

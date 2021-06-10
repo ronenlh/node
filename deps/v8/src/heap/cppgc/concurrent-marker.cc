@@ -125,7 +125,7 @@ void ConcurrentMarkingTask::ProcessWorklists(
               BasePage::FromPayload(item.base_object_payload)
                   ->SynchronizedLoad();
               const HeapObjectHeader& header =
-                  HeapObjectHeader::FromPayload(item.base_object_payload);
+                  HeapObjectHeader::FromObject(item.base_object_payload);
               DCHECK(!header.IsInConstruction<AccessMode::kAtomic>());
               DCHECK(header.IsMarked<AccessMode::kAtomic>());
               concurrent_marking_state.AccountMarkedBytes(header);
@@ -143,6 +143,20 @@ void ConcurrentMarkingTask::ProcessWorklists(
              &concurrent_marking_visitor](HeapObjectHeader* header) {
               BasePage::FromPayload(header)->SynchronizedLoad();
               concurrent_marking_state.AccountMarkedBytes(*header);
+              DynamicallyTraceMarkedObject<AccessMode::kAtomic>(
+                  concurrent_marking_visitor, *header);
+            })) {
+      return;
+    }
+
+    if (!DrainWorklistWithYielding(
+            job_delegate, concurrent_marking_state,
+            concurrent_marker_.incremental_marking_schedule(),
+            concurrent_marking_state.retrace_marked_objects_worklist(),
+            [&concurrent_marking_visitor](HeapObjectHeader* header) {
+              BasePage::FromPayload(header)->SynchronizedLoad();
+              // Retracing does not increment marked bytes as the object has
+              // already been processed before.
               DynamicallyTraceMarkedObject<AccessMode::kAtomic>(
                   concurrent_marking_visitor, *header);
             })) {

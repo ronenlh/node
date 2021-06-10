@@ -2,13 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {DOM, V8CustomElement} from './helper.mjs';
+import {App} from '../index.mjs'
+
+import {FocusEvent} from './events.mjs';
+import {DOM, ExpandableText, V8CustomElement} from './helper.mjs';
 
 DOM.defineCustomElement(
     'view/tool-tip', (templateText) => class Tooltip extends V8CustomElement {
       _targetNode;
       _content;
       _isHidden = true;
+      _logEntryClickHandler = this._handleLogEntryClick.bind(this);
+      _logEntryRelatedHandler = this._handleLogEntryRelated.bind(this);
+
       constructor() {
         super(templateText);
         this._intersectionObserver = new IntersectionObserver((entries) => {
@@ -16,9 +22,10 @@ DOM.defineCustomElement(
             this.hide();
           } else {
             this.show();
-            this.update(true);
+            this.requestUpdate(true);
           }
         });
+        document.addEventListener('click', (e) => this.hide());
       }
 
       _update() {
@@ -27,11 +34,9 @@ DOM.defineCustomElement(
         rect.x += rect.width / 2;
         let atRight = this._useRight(rect.x);
         let atBottom = this._useBottom(rect.y);
-        if (atBottom) {
-          rect.y += rect.height;
-        }
+        if (atBottom) rect.y += rect.height;
         this._setPosition(rect, atRight, atBottom);
-        this.update(true);
+        this.requestUpdate(true);
       }
 
       set positionOrTargetNode(positionOrTargetNode) {
@@ -45,10 +50,11 @@ DOM.defineCustomElement(
       set targetNode(targetNode) {
         this._intersectionObserver.disconnect();
         this._targetNode = targetNode;
-        if (targetNode) {
+        if (targetNode === undefined) return;
+        if (!(targetNode instanceof SVGElement)) {
           this._intersectionObserver.observe(targetNode);
-          this.update(true);
         }
+        this.requestUpdate(true);
       }
 
       set position(position) {
@@ -81,12 +87,26 @@ DOM.defineCustomElement(
         if (typeof content === 'string') {
           this.contentNode.innerHTML = content;
           this.contentNode.className = 'textContent';
+        } else if (content?.nodeType && nodeType?.nodeName) {
+          this._setContentNode(content);
         } else {
-          const newContent = DOM.div();
-          newContent.appendChild(content);
-          this.contentNode.replaceWith(newContent);
-          newContent.id = 'content';
+          this._setContentNode(new TableBuilder(this, content).fragment);
         }
+      }
+
+      _setContentNode(content) {
+        const newContent = DOM.div();
+        newContent.appendChild(content);
+        this.contentNode.replaceWith(newContent);
+        newContent.id = 'content';
+      }
+
+      _handleLogEntryClick(e) {
+        this.dispatchEvent(new FocusEvent(e.currentTarget.data));
+      }
+
+      _handleLogEntryRelated(e) {
+        this.dispatchEvent(new SelectRelatedEvent(e.currentTarget.data));
       }
 
       hide() {
@@ -108,3 +128,61 @@ DOM.defineCustomElement(
         return this.$('#content');
       }
     });
+
+class TableBuilder {
+  _instance;
+
+  constructor(tooltip, descriptor) {
+    this._fragment = new DocumentFragment();
+    this._table = DOM.table('properties');
+    this._tooltip = tooltip;
+    for (let key in descriptor) {
+      const value = descriptor[key];
+      this._addKeyValue(key, value);
+    }
+    this._addFooter();
+    this._fragment.appendChild(this._table);
+  }
+
+  _addKeyValue(key, value) {
+    if (key == 'title') return this._addTitle(value);
+    if (key == '__this__') {
+      this._instance = value;
+      return;
+    }
+    const row = this._table.insertRow();
+    row.insertCell().innerText = key;
+    const cell = row.insertCell();
+    if (value == undefined) return;
+    if (App.isClickable(value)) {
+      cell.innerText = value.toString();
+      cell.className = 'clickable';
+      cell.onclick = this._logEntryClickHandler;
+      cell.data = value;
+    } else {
+      new ExpandableText(cell, value.toString());
+    }
+  }
+
+  _addTitle(value) {
+    const title = DOM.element('h3');
+    title.innerText = value;
+    this._fragment.appendChild(title);
+  }
+
+  _addFooter() {
+    if (this._instance === undefined) return;
+    const td = this._table.createTFoot().insertRow().insertCell();
+    td.colSpan = 2;
+    let button =
+        td.appendChild(DOM.button('Show', this._tooltip._logEntryClickHandler));
+    button.data = this._instance;
+    button = td.appendChild(
+        DOM.button('Show Related', this._tooltip._logEntryRelatedClickHandler));
+    button.data = this._instance;
+  }
+
+  get fragment() {
+    return this._fragment;
+  }
+}

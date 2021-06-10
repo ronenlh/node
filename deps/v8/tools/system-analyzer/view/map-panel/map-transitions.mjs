@@ -37,7 +37,7 @@ DOM.defineCustomElement(
 
       set selectedLogEntries(list) {
         this._selectedLogEntries = list;
-        this.update();
+        this.requestUpdate();
       }
 
       _update() {
@@ -148,8 +148,8 @@ DOM.defineCustomElement(
       }
 
       _handleMouseoverMap(event) {
-        this.dispatchEvent(new ToolTipEvent(
-            event.currentTarget.map.toStringLong(), event.currentTarget));
+        this.dispatchEvent(
+            new ToolTipEvent(event.currentTarget.map, event.currentTarget));
       }
 
       _handleToggleSubtree(event) {

@@ -36,8 +36,8 @@ USE_PTY = "linux" in sys.platform
 if USE_PTY:
   import pty
 
-BUILD_TARGETS_TEST = ["d8", "cctest", "inspector-test", "unittests",
-                      "wasm_api_tests"]
+BUILD_TARGETS_TEST = ["d8", "bigint_shell", "cctest", "inspector-test",
+                      "unittests", "wasm_api_tests"]
 BUILD_TARGETS_ALL = ["all"]
 
 # All arches that this script understands.
@@ -51,7 +51,8 @@ MODES = ["release", "debug", "optdebug"]
 DEFAULT_MODES = ["release", "debug"]
 # Build targets that can be manually specified.
 TARGETS = ["d8", "cctest", "unittests", "v8_fuzzers", "wasm_api_tests", "wee8",
-           "mkgrokdump", "generate-bytecode-expectations", "inspector-test"]
+           "mkgrokdump", "generate-bytecode-expectations", "inspector-test",
+           "bigint_shell"]
 # Build targets that get built when you don't specify any (and specified tests
 # don't imply any other targets).
 DEFAULT_TARGETS = ["d8"]
@@ -81,6 +82,7 @@ HELP = """<arch> can be any of: %(arches)s
        "targets": ", ".join(TARGETS)}
 
 TESTSUITES_TARGETS = {"benchmarks": "d8",
+              "bigint": "bigint_shell",
               "cctest": "cctest",
               "debugger": "d8",
               "fuzzer": "v8_fuzzers",
@@ -262,10 +264,10 @@ class Config(object):
       cpu = "arm"
     elif self.arch == "android_arm64":
       cpu = "arm64"
-    elif self.arch == "arm64" and _GetMachine() == "aarch64":
+    elif self.arch == "arm64" and _GetMachine() in ("aarch64", "arm64"):
       # arm64 build host:
       cpu = "arm64"
-    elif self.arch == "arm" and _GetMachine() == "aarch64":
+    elif self.arch == "arm" and _GetMachine() in ("aarch64", "arm64"):
       cpu = "arm"
     elif "64" in self.arch or self.arch == "s390x":
       # Native x64 or simulator build.
@@ -291,7 +293,8 @@ class Config(object):
 
   def GetSpecialCompiler(self):
     if _GetMachine() == "aarch64":
-      # We have no prebuilt Clang for arm64. Use the system Clang instead.
+      # We have no prebuilt Clang for arm64 on Linux, so use the system Clang
+      # instead.
       return ["clang_base_path = \"/usr\"", "clang_use_chrome_plugins = false"]
     return []
 

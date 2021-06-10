@@ -4,7 +4,7 @@
 
 // Flags: --experimental-wasm-typed-funcref
 
-load('test/mjsunit/wasm/wasm-module-builder.js');
+d8.file.execute('test/mjsunit/wasm/wasm-module-builder.js');
 
 (function TestTables() {
   var exporting_instance = (function() {
@@ -115,7 +115,8 @@ load('test/mjsunit/wasm/wasm-module-builder.js');
           .addBody([kExprLocalGet, 0, kExprLocalGet, 1, kExprI32Sub])
           .exportFunc();
 
-  var table = builder.addTable(wasmRefType(binary_type), 3, 3, addition.index);
+  var table = builder.addTable(wasmRefType(binary_type), 3, 3,
+                               WasmInitExpr.RefFunc(addition.index));
 
   builder.addFunction('init', kSig_v_v)
       .addBody([

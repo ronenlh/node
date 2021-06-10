@@ -69,8 +69,8 @@ int ComputeStringTableCapacityWithShrink(int current_capacity,
   return new_capacity;
 }
 
-template <typename LocalIsolate, typename StringTableKey>
-bool KeyIsMatch(LocalIsolate* isolate, StringTableKey* key, String string) {
+template <typename IsolateT, typename StringTableKey>
+bool KeyIsMatch(IsolateT* isolate, StringTableKey* key, String string) {
   if (string.hash() != key->hash()) return false;
   if (string.length() != key->length()) return false;
   return key->IsMatch(isolate, string);
@@ -135,15 +135,15 @@ class StringTable::Data {
   int number_of_elements() const { return number_of_elements_; }
   int number_of_deleted_elements() const { return number_of_deleted_elements_; }
 
-  template <typename LocalIsolate, typename StringTableKey>
-  InternalIndex FindEntry(LocalIsolate* isolate, StringTableKey* key,
+  template <typename IsolateT, typename StringTableKey>
+  InternalIndex FindEntry(IsolateT* isolate, StringTableKey* key,
                           uint32_t hash) const;
 
   InternalIndex FindInsertionEntry(PtrComprCageBase cage_base,
                                    uint32_t hash) const;
 
-  template <typename LocalIsolate, typename StringTableKey>
-  InternalIndex FindEntryOrInsertionEntry(LocalIsolate* isolate,
+  template <typename IsolateT, typename StringTableKey>
+  InternalIndex FindEntryOrInsertionEntry(IsolateT* isolate,
                                           StringTableKey* key,
                                           uint32_t hash) const;
 
@@ -249,8 +249,8 @@ std::unique_ptr<StringTable::Data> StringTable::Data::Resize(
   return new_data;
 }
 
-template <typename LocalIsolate, typename StringTableKey>
-InternalIndex StringTable::Data::FindEntry(LocalIsolate* isolate,
+template <typename IsolateT, typename StringTableKey>
+InternalIndex StringTable::Data::FindEntry(IsolateT* isolate,
                                            StringTableKey* key,
                                            uint32_t hash) const {
   uint32_t count = 1;
@@ -281,9 +281,9 @@ InternalIndex StringTable::Data::FindInsertionEntry(PtrComprCageBase cage_base,
   }
 }
 
-template <typename LocalIsolate, typename StringTableKey>
+template <typename IsolateT, typename StringTableKey>
 InternalIndex StringTable::Data::FindEntryOrInsertionEntry(
-    LocalIsolate* isolate, StringTableKey* key, uint32_t hash) const {
+    IsolateT* isolate, StringTableKey* key, uint32_t hash) const {
   InternalIndex insertion_entry = InternalIndex::NotFound();
   uint32_t count = 1;
   // EnsureCapacity will guarantee the hash table is never full.
@@ -373,21 +373,20 @@ class InternalizedStringKey final : public StringTableKey {
       DCHECK(string_->IsInternalizedString());
       return string_;
     }
-    if (FLAG_thin_strings) {
-      // External strings get special treatment, to avoid copying their
-      // contents as long as they are not uncached.
-      StringShape shape(*string_);
-      if (shape.IsExternalOneByte() && !shape.IsUncachedExternal()) {
-        return isolate->factory()
-            ->InternalizeExternalString<ExternalOneByteString>(string_);
-      } else if (shape.IsExternalTwoByte() && !shape.IsUncachedExternal()) {
-        return isolate->factory()
-            ->InternalizeExternalString<ExternalTwoByteString>(string_);
-      }
+    // External strings get special treatment, to avoid copying their
+    // contents as long as they are not uncached.
+    StringShape shape(*string_);
+    if (shape.IsExternalOneByte() && !shape.IsUncachedExternal()) {
+      return isolate->factory()
+          ->InternalizeExternalString<ExternalOneByteString>(string_);
+    } else if (shape.IsExternalTwoByte() && !shape.IsUncachedExternal()) {
+      return isolate->factory()
+          ->InternalizeExternalString<ExternalTwoByteString>(string_);
+    } else {
+      // Otherwise allocate a new internalized string.
+      return isolate->factory()->NewInternalizedStringImpl(
+          string_, string_->length(), string_->raw_hash_field());
     }
-    // Otherwise allocate a new internalized string.
-    return isolate->factory()->NewInternalizedStringImpl(
-        string_, string_->length(), string_->raw_hash_field());
   }
 
  private:
@@ -402,35 +401,14 @@ Handle<String> StringTable::LookupString(Isolate* isolate,
   InternalizedStringKey key(string);
   Handle<String> result = LookupKey(isolate, &key);
 
-  if (FLAG_thin_strings) {
-    if (!string->IsInternalizedString()) {
-      string->MakeThin(isolate, *result);
-    }
-  } else {  // !FLAG_thin_strings
-    if (string->IsConsString()) {
-      Handle<ConsString> cons = Handle<ConsString>::cast(string);
-      cons->set_first(*result);
-      cons->set_second(ReadOnlyRoots(isolate).empty_string());
-    } else if (string->IsSlicedString()) {
-      STATIC_ASSERT(static_cast<int>(ConsString::kSize) ==
-                    static_cast<int>(SlicedString::kSize));
-      DisallowGarbageCollection no_gc;
-      bool one_byte = result->IsOneByteRepresentation();
-      Handle<Map> map = one_byte
-                            ? isolate->factory()->cons_one_byte_string_map()
-                            : isolate->factory()->cons_string_map();
-      string->set_map(*map);
-      Handle<ConsString> cons = Handle<ConsString>::cast(string);
-      cons->set_first(*result);
-      cons->set_second(ReadOnlyRoots(isolate).empty_string());
-    }
+  if (!string->IsInternalizedString()) {
+    string->MakeThin(isolate, *result);
   }
   return result;
 }
 
-template <typename StringTableKey, typename LocalIsolate>
-Handle<String> StringTable::LookupKey(LocalIsolate* isolate,
-                                      StringTableKey* key) {
+template <typename StringTableKey, typename IsolateT>
+Handle<String> StringTable::LookupKey(IsolateT* isolate, StringTableKey* key) {
   // String table lookups are allowed to be concurrent, assuming that:
   //
   //   - The Heap access is allowed to be concurrent (using LocalHeap or
@@ -629,9 +607,7 @@ Address StringTable::Data::TryStringToIndexOrLookupExisting(Isolate* isolate,
   }
 
   String internalized = String::cast(string_table_data->Get(isolate, entry));
-  if (FLAG_thin_strings) {
-    string.MakeThin(isolate, internalized);
-  }
+  string.MakeThin(isolate, internalized);
   return internalized.ptr();
 }
 

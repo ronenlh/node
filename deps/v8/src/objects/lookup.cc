@@ -15,8 +15,13 @@
 #include "src/objects/field-type.h"
 #include "src/objects/hash-table-inl.h"
 #include "src/objects/heap-number-inl.h"
+#include "src/objects/map-updater.h"
 #include "src/objects/ordered-hash-table.h"
 #include "src/objects/struct-inl.h"
+
+#if V8_ENABLE_WEBASSEMBLY
+#include "src/wasm/wasm-objects-inl.h"
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 namespace v8 {
 namespace internal {
@@ -471,7 +476,7 @@ void LookupIterator::ReconfigureDataProperty(Handle<Object> value,
     Handle<Map> old_map(holder_obj->map(isolate_), isolate_);
     // Force mutable to avoid changing constant value by reconfiguring
     // kData -> kAccessor -> kData.
-    Handle<Map> new_map = Map::ReconfigureExistingProperty(
+    Handle<Map> new_map = MapUpdater::ReconfigureExistingProperty(
         isolate_, old_map, descriptor_number(), i::kData, attributes,
         PropertyConstness::kMutable);
     if (!new_map->is_dictionary_map()) {
@@ -487,11 +492,15 @@ void LookupIterator::ReconfigureDataProperty(Handle<Object> value,
 
   if (!IsElement(*holder) && !holder_obj->HasFastProperties(isolate_)) {
     if (holder_obj->map(isolate_).is_prototype_map() &&
-        (property_details_.attributes() & READ_ONLY) == 0 &&
-        (attributes & READ_ONLY) != 0) {
+        (((property_details_.attributes() & READ_ONLY) == 0 &&
+          (attributes & READ_ONLY) != 0) ||
+         (property_details_.attributes() & DONT_ENUM) !=
+             (attributes & DONT_ENUM))) {
       // Invalidate prototype validity cell when a property is reconfigured
       // from writable to read-only as this may invalidate transitioning store
       // IC handlers.
+      // Invalidate prototype validity cell when a property changes
+      // enumerability to clear the prototype chain enum cache.
       JSObject::InvalidatePrototypeChains(holder->map(isolate_));
     }
     if (holder_obj->IsJSGlobalObject(isolate_)) {
@@ -688,10 +697,10 @@ void LookupIterator::Delete() {
   } else {
     DCHECK(!name()->IsPrivateName(isolate_));
     bool is_prototype_map = holder->map(isolate_).is_prototype_map();
-    RuntimeCallTimerScope stats_scope(
-        isolate_, is_prototype_map
-                      ? RuntimeCallCounterId::kPrototypeObject_DeleteProperty
-                      : RuntimeCallCounterId::kObject_DeleteProperty);
+    RCS_SCOPE(isolate_,
+              is_prototype_map
+                  ? RuntimeCallCounterId::kPrototypeObject_DeleteProperty
+                  : RuntimeCallCounterId::kObject_DeleteProperty);
 
     PropertyNormalizationMode mode =
         is_prototype_map ? KEEP_INOBJECT_PROPERTIES : CLEAR_INOBJECT_PROPERTIES;
@@ -847,6 +856,17 @@ Handle<Object> LookupIterator::FetchValue(
     AllocationPolicy allocation_policy) const {
   Object result;
   if (IsElement(*holder_)) {
+#if V8_ENABLE_WEBASSEMBLY
+    if (V8_UNLIKELY(holder_->IsWasmObject(isolate_))) {
+      if (holder_->IsWasmStruct()) {
+        // WasmStructs don't have elements.
+        return isolate_->factory()->undefined_value();
+      }
+      Handle<WasmArray> holder = GetHolder<WasmArray>();
+      return WasmArray::GetElement(isolate_, holder, number_.as_uint32());
+    }
+#endif  // V8_ENABLE_WEBASSEMBLY
+    DCHECK(holder_->IsJSObject(isolate_));
     Handle<JSObject> holder = GetHolder<JSObject>();
     ElementsAccessor* accessor = holder->GetElementsAccessor(isolate_);
     return accessor->Get(holder, number_);
@@ -864,6 +884,27 @@ Handle<Object> LookupIterator::FetchValue(
     }
   } else if (property_details_.location() == kField) {
     DCHECK_EQ(kData, property_details_.kind());
+#if V8_ENABLE_WEBASSEMBLY
+    if (V8_UNLIKELY(holder_->IsWasmObject(isolate_))) {
+      if (allocation_policy == AllocationPolicy::kAllocationDisallowed) {
+        // TODO(ishell): consider taking field type into account and relaxing
+        // this a bit.
+        return isolate_->factory()->undefined_value();
+      }
+      if (holder_->IsWasmArray(isolate_)) {
+        // WasmArrays don't have other named properties besides "length".
+        DCHECK_EQ(*name_, ReadOnlyRoots(isolate_).length_string());
+        Handle<WasmArray> holder = GetHolder<WasmArray>();
+        uint32_t length = holder->length();
+        return isolate_->factory()->NewNumberFromUint(length);
+      }
+      Handle<WasmStruct> holder = GetHolder<WasmStruct>();
+      return WasmStruct::GetField(isolate_, holder,
+                                  property_details_.field_index());
+    }
+#endif  // V8_ENABLE_WEBASSEMBLY
+
+    DCHECK(holder_->IsJSObject(isolate_));
     Handle<JSObject> holder = GetHolder<JSObject>();
     FieldIndex field_index =
         FieldIndex::ForDescriptor(holder->map(isolate_), descriptor_number());
@@ -1026,7 +1067,9 @@ void LookupIterator::WriteDataValue(Handle<Object> value,
     GlobalDictionary dictionary =
         JSGlobalObject::cast(*holder).global_dictionary(isolate_, kAcquireLoad);
     PropertyCell cell = dictionary.CellAt(isolate_, dictionary_entry());
-    DCHECK_EQ(cell.value(), *value);
+    DCHECK(cell.value() == *value ||
+           (cell.value().IsString() && value->IsString() &&
+            String::cast(cell.value()).Equals(String::cast(*value))));
 #endif  // DEBUG
   } else {
     DCHECK_IMPLIES(holder->IsJSProxy(isolate_), name()->IsPrivate(isolate_));
@@ -1247,13 +1290,13 @@ bool LookupIterator::LookupCachedProperty(Handle<AccessorPair> accessor_pair) {
   DCHECK_EQ(state(), LookupIterator::ACCESSOR);
   DCHECK(GetAccessors()->IsAccessorPair(isolate_));
 
-  Handle<Object> getter(accessor_pair->getter(isolate_), isolate());
-  MaybeHandle<Name> maybe_name =
-      FunctionTemplateInfo::TryGetCachedPropertyName(isolate(), getter);
-  if (maybe_name.is_null()) return false;
+  base::Optional<Name> maybe_name =
+      FunctionTemplateInfo::TryGetCachedPropertyName(
+          isolate(), accessor_pair->getter(isolate_));
+  if (!maybe_name.has_value()) return false;
 
   // We have found a cached property! Modify the iterator accordingly.
-  name_ = maybe_name.ToHandleChecked();
+  name_ = handle(maybe_name.value(), isolate_);
   Restart();
   CHECK_EQ(state(), LookupIterator::DATA);
   return true;
@@ -1329,6 +1372,7 @@ ConcurrentLookupIterator::TryGetOwnConstantElement(
   // - single_character_string_cache()->get().
 
   if (IsFrozenElementsKind(elements_kind)) {
+    if (!elements.IsFixedArray()) return kGaveUp;
     FixedArray elements_fixed_array = FixedArray::cast(elements);
     if (index >= static_cast<uint32_t>(elements_fixed_array.length())) {
       return kGaveUp;
@@ -1341,7 +1385,7 @@ ConcurrentLookupIterator::TryGetOwnConstantElement(
     *result_out = result;
     return kPresent;
   } else if (IsDictionaryElementsKind(elements_kind)) {
-    DCHECK(elements.IsNumberDictionary());
+    if (!elements.IsNumberDictionary()) return kGaveUp;
     // TODO(jgruber, v8:7790): Add support. Dictionary elements require racy
     // NumberDictionary lookups. This should be okay in general (slot iteration
     // depends only on the dict's capacity), but 1. we'd need to update
@@ -1355,11 +1399,13 @@ ConcurrentLookupIterator::TryGetOwnConstantElement(
     JSPrimitiveWrapper js_value = JSPrimitiveWrapper::cast(holder);
     String wrapped_string = String::cast(js_value.value());
 
-    // The access guard below protects only internalized string accesses.
+    // The access guard below protects string accesses related to internalized
+    // strings.
     // TODO(jgruber): Support other string kinds.
-    Map wrapped_string_map = wrapped_string.synchronized_map(isolate);
-    if (!InstanceTypeChecker::IsInternalizedString(
-            wrapped_string_map.instance_type())) {
+    Map wrapped_string_map = wrapped_string.map(isolate, kAcquireLoad);
+    InstanceType wrapped_type = wrapped_string_map.instance_type();
+    if (!(InstanceTypeChecker::IsInternalizedString(wrapped_type)) ||
+        InstanceTypeChecker::IsThinString(wrapped_type)) {
       return kGaveUp;
     }
 

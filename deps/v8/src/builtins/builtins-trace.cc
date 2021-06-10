@@ -9,6 +9,7 @@
 #include "src/json/json-stringifier.h"
 #include "src/logging/counters.h"
 #include "src/objects/objects-inl.h"
+#include "src/tracing/traced-value.h"
 
 #if defined(V8_USE_PERFETTO)
 #include "protos/perfetto/trace/track_event/debug_annotation.pbzero.h"
@@ -122,7 +123,7 @@ BUILTIN(IsTraceCategoryEnabled) {
   return isolate->heap()->ToBoolean(enabled);
 }
 
-// Builtins::kTrace(phase, category, name, id, data) : bool
+// Builtin::kTrace(phase, category, name, id, data) : bool
 BUILTIN(Trace) {
   HandleScope handle_scope(isolate);
 

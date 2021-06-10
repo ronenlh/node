@@ -131,7 +131,6 @@ void UnoptimizedCompileFlags::SetFlagsFromFunction(T function) {
   set_has_static_private_methods_or_accessors(
       function->has_static_private_methods_or_accessors());
   set_is_toplevel(function->is_toplevel());
-  set_is_oneshot_iife(function->is_oneshot_iife());
 }
 
 void UnoptimizedCompileFlags::SetFlagsForToplevelCompile(
@@ -234,9 +233,9 @@ ParseInfo::~ParseInfo() = default;
 
 DeclarationScope* ParseInfo::scope() const { return literal()->scope(); }
 
-template <typename LocalIsolate>
+template <typename IsolateT>
 Handle<Script> ParseInfo::CreateScript(
-    LocalIsolate* isolate, Handle<String> source,
+    IsolateT* isolate, Handle<String> source,
     MaybeHandle<FixedArray> maybe_wrapped_arguments,
     ScriptOriginOptions origin_options, NativesFlag natives) {
   // Create a script object describing the script to be compiled.

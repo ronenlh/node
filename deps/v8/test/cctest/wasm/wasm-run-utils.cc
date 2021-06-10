@@ -4,9 +4,11 @@
 
 #include "test/cctest/wasm/wasm-run-utils.h"
 
+#include "src/base/optional.h"
 #include "src/codegen/assembler-inl.h"
 #include "src/diagnostics/code-tracer.h"
 #include "src/heap/heap-inl.h"
+#include "src/wasm/baseline/liftoff-compiler.h"
 #include "src/wasm/graph-builder-interface.h"
 #include "src/wasm/leb-helper.h"
 #include "src/wasm/module-compiler.h"
@@ -22,13 +24,12 @@ namespace wasm {
 TestingModuleBuilder::TestingModuleBuilder(
     Zone* zone, ManuallyImportedJSFunction* maybe_import,
     TestExecutionTier tier, RuntimeExceptionSupport exception_support,
-    LowerSimd lower_simd)
+    Isolate* isolate)
     : test_module_(std::make_shared<WasmModule>()),
-      isolate_(CcTest::InitIsolateOnce()),
+      isolate_(isolate ? isolate : CcTest::InitIsolateOnce()),
       enabled_features_(WasmFeatures::FromIsolate(isolate_)),
       execution_tier_(tier),
-      runtime_exception_support_(exception_support),
-      lower_simd_(lower_simd) {
+      runtime_exception_support_(exception_support) {
   WasmJs::Install(isolate_, true);
   test_module_->untagged_globals_buffer_size = kMaxGlobalsSize;
   memset(globals_data_, 0, sizeof(globals_data_));
@@ -164,7 +165,6 @@ void TestingModuleBuilder::FreezeSignatureMapAndInitializeWrapperCache() {
 Handle<JSFunction> TestingModuleBuilder::WrapCode(uint32_t index) {
   CHECK(!interpreter_);
   FreezeSignatureMapAndInitializeWrapperCache();
-  SetExecutable();
   return WasmInstanceObject::GetOrCreateWasmExternalFunction(
       isolate_, instance_object(), index);
 }
@@ -297,9 +297,11 @@ uint32_t TestingModuleBuilder::AddPassiveElementSegment(
   uint32_t index = static_cast<uint32_t>(test_module_->elem_segments.size());
   DCHECK_EQ(index, dropped_elem_segments_.size());
 
-  test_module_->elem_segments.emplace_back(false);
+  test_module_->elem_segments.emplace_back(kWasmFuncRef, false);
   auto& elem_segment = test_module_->elem_segments.back();
-  elem_segment.entries = entries;
+  for (uint32_t entry : entries) {
+    elem_segment.entries.push_back(WasmInitExpr::RefFuncConst(entry));
+  }
 
   // The vector pointers may have moved, so update the instance object.
   dropped_elem_segments_.push_back(0);
@@ -314,7 +316,7 @@ CompilationEnv TestingModuleBuilder::CreateCompilationEnv() {
       V8_TRAP_HANDLER_SUPPORTED && i::FLAG_wasm_trap_handler;
   return {test_module_.get(),
           is_trap_handler_enabled ? kUseTrapHandler : kNoTrapHandler,
-          runtime_exception_support_, enabled_features_, lower_simd()};
+          runtime_exception_support_, enabled_features_};
 }
 
 const WasmGlobal* TestingModuleBuilder::AddGlobal(ValueType type) {
@@ -363,7 +365,7 @@ void TestBuildingGraphWithBuilder(compiler::WasmGraphBuilder* builder,
   std::vector<compiler::WasmLoopInfo> loops;
   DecodeResult result =
       BuildTFGraph(zone->allocator(), WasmFeatures::All(), nullptr, builder,
-                   &unused_detected_features, body, &loops, nullptr);
+                   &unused_detected_features, body, &loops, nullptr, 0);
   if (result.failed()) {
 #ifdef DEBUG
     if (!FLAG_trace_wasm_decoder) {
@@ -371,7 +373,7 @@ void TestBuildingGraphWithBuilder(compiler::WasmGraphBuilder* builder,
       FLAG_trace_wasm_decoder = true;
       result =
           BuildTFGraph(zone->allocator(), WasmFeatures::All(), nullptr, builder,
-                       &unused_detected_features, body, &loops, nullptr);
+                       &unused_detected_features, body, &loops, nullptr, 0);
     }
 #endif
 
@@ -463,11 +465,9 @@ void WasmFunctionWrapper::Init(CallDescriptor* call_descriptor,
   graph()->SetEnd(graph()->NewNode(common()->End(1), r));
 }
 
-Handle<Code> WasmFunctionWrapper::GetWrapperCode() {
+Handle<Code> WasmFunctionWrapper::GetWrapperCode(Isolate* isolate) {
   Handle<Code> code;
   if (!code_.ToHandle(&code)) {
-    Isolate* isolate = CcTest::InitIsolateOnce();
-
     auto call_descriptor = compiler::Linkage::GetSimplifiedCDescriptor(
         zone(), signature_, CallDescriptor::kInitializeRootRegister);
 
@@ -549,15 +549,26 @@ void WasmFunctionCompiler::Build(const byte* start, const byte* end) {
       builder_->instance_object()->module_object().native_module();
   ForDebugging for_debugging =
       native_module->IsTieredDown() ? kForDebugging : kNoDebugging;
-  WasmCompilationUnit unit(function_->func_index, builder_->execution_tier(),
-                           for_debugging);
+
   WasmFeatures unused_detected_features;
-  WasmCompilationResult result = unit.ExecuteCompilation(
-      isolate()->wasm_engine(), &env,
-      native_module->compilation_state()->GetWireBytesStorage(),
-      isolate()->counters(), &unused_detected_features);
+
+  base::Optional<WasmCompilationResult> result;
+  if (builder_->test_execution_tier() ==
+      TestExecutionTier::kLiftoffForFuzzing) {
+    result.emplace(ExecuteLiftoffCompilation(
+        isolate()->wasm_engine()->allocator(), &env, func_body,
+        function_->func_index, kForDebugging, isolate()->counters(),
+        &unused_detected_features, {}, nullptr, 0, builder_->max_steps_ptr()));
+  } else {
+    WasmCompilationUnit unit(function_->func_index, builder_->execution_tier(),
+                             for_debugging);
+    result.emplace(unit.ExecuteCompilation(
+        isolate()->wasm_engine(), &env,
+        native_module->compilation_state()->GetWireBytesStorage(),
+        isolate()->counters(), &unused_detected_features));
+  }
   WasmCode* code = native_module->PublishCode(
-      native_module->AddCompiledCode(std::move(result)));
+      native_module->AddCompiledCode(std::move(*result)));
   DCHECK_NOT_NULL(code);
   DisallowGarbageCollection no_gc;
   Script script = builder_->instance_object()->module_object().script();

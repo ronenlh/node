@@ -228,7 +228,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleDeoptimizerCall(
     }
     tasm()->bind(exit->label());
   }
-  Builtins::Name target =
+  Builtin target =
       deopt_kind == DeoptimizeKind::kEagerWithResume
           ? Deoptimizer::GetDeoptWithResumeBuiltin(deoptimization_reason)
           : Deoptimizer::GetDeoptimizationEntry(deopt_kind);
@@ -587,11 +587,6 @@ MaybeHandle<Code> CodeGenerator::FinalizeCode() {
     tasm()->AbortedCodeGeneration();
     return MaybeHandle<Code>();
   }
-
-  // TODO(jgruber,v8:8888): Turn this into a DCHECK once confidence is
-  // high that the implementation is complete.
-  CHECK_IMPLIES(info()->IsNativeContextIndependent(),
-                code->IsNativeContextIndependent(isolate()));
 
   // Counts both compiled code and metadata.
   isolate()->counters()->total_compiled_code_size()->Increment(

@@ -36,25 +36,31 @@ namespace internal {
 
 OBJECT_CONSTRUCTORS_IMPL(WasmExceptionObject, JSObject)
 TQ_OBJECT_CONSTRUCTORS_IMPL(WasmExceptionTag)
-OBJECT_CONSTRUCTORS_IMPL(WasmExportedFunctionData, Struct)
+OBJECT_CONSTRUCTORS_IMPL(WasmCapiFunctionData, WasmFunctionData)
+OBJECT_CONSTRUCTORS_IMPL(WasmExportedFunctionData, WasmFunctionData)
 OBJECT_CONSTRUCTORS_IMPL(WasmGlobalObject, JSObject)
 OBJECT_CONSTRUCTORS_IMPL(WasmInstanceObject, JSObject)
+OBJECT_CONSTRUCTORS_IMPL(WasmObject, JSReceiver)
 OBJECT_CONSTRUCTORS_IMPL(WasmMemoryObject, JSObject)
 OBJECT_CONSTRUCTORS_IMPL(WasmModuleObject, JSObject)
 OBJECT_CONSTRUCTORS_IMPL(WasmTableObject, JSObject)
 OBJECT_CONSTRUCTORS_IMPL(AsmWasmData, Struct)
+TQ_OBJECT_CONSTRUCTORS_IMPL(WasmFunctionData)
 TQ_OBJECT_CONSTRUCTORS_IMPL(WasmTypeInfo)
 TQ_OBJECT_CONSTRUCTORS_IMPL(WasmStruct)
 TQ_OBJECT_CONSTRUCTORS_IMPL(WasmArray)
 
+CAST_ACCESSOR(WasmCapiFunctionData)
 CAST_ACCESSOR(WasmExceptionObject)
 CAST_ACCESSOR(WasmExportedFunctionData)
 CAST_ACCESSOR(WasmGlobalObject)
 CAST_ACCESSOR(WasmInstanceObject)
+CAST_ACCESSOR(WasmObject)
 CAST_ACCESSOR(WasmMemoryObject)
 CAST_ACCESSOR(WasmModuleObject)
 CAST_ACCESSOR(WasmTableObject)
 CAST_ACCESSOR(AsmWasmData)
+CAST_ACCESSOR(WasmFunctionData)
 CAST_ACCESSOR(WasmTypeInfo)
 CAST_ACCESSOR(WasmStruct)
 CAST_ACCESSOR(WasmArray)
@@ -314,6 +320,11 @@ ImportedFunctionEntry::ImportedFunctionEntry(
   DCHECK_LT(index, instance->module()->num_imported_functions);
 }
 
+// WasmCapiFunctionData
+ACCESSORS(WasmCapiFunctionData, embedder_data, Foreign, kEmbedderDataOffset)
+ACCESSORS(WasmCapiFunctionData, serialized_signature, PodArray<wasm::ValueType>,
+          kSerializedSignatureOffset)
+
 // WasmExceptionObject
 ACCESSORS(WasmExceptionObject, serialized_signature, PodArray<wasm::ValueType>,
           kSerializedSignatureOffset)
@@ -329,18 +340,17 @@ WasmExportedFunction::WasmExportedFunction(Address ptr) : JSFunction(ptr) {
 }
 CAST_ACCESSOR(WasmExportedFunction)
 
+// WasmFunctionData
+ACCESSORS(WasmFunctionData, ref, Object, kRefOffset)
+ACCESSORS(WasmFunctionData, wrapper_code, Code, kWrapperCodeOffset)
+
 // WasmExportedFunctionData
-ACCESSORS(WasmExportedFunctionData, wrapper_code, Code, kWrapperCodeOffset)
 ACCESSORS(WasmExportedFunctionData, instance, WasmInstanceObject,
           kInstanceOffset)
-SMI_ACCESSORS(WasmExportedFunctionData, jump_table_offset,
-              kJumpTableOffsetOffset)
 SMI_ACCESSORS(WasmExportedFunctionData, function_index, kFunctionIndexOffset)
 ACCESSORS(WasmExportedFunctionData, signature, Foreign, kSignatureOffset)
 SMI_ACCESSORS(WasmExportedFunctionData, wrapper_budget, kWrapperBudgetOffset)
 ACCESSORS(WasmExportedFunctionData, c_wrapper_code, Object, kCWrapperCodeOffset)
-ACCESSORS(WasmExportedFunctionData, wasm_call_target, Object,
-          kWasmCallTargetOffset)
 SMI_ACCESSORS(WasmExportedFunctionData, packed_args_size, kPackedArgsSizeOffset)
 
 wasm::FunctionSig* WasmExportedFunctionData::sig() const {
@@ -354,7 +364,7 @@ WasmJSFunction::WasmJSFunction(Address ptr) : JSFunction(ptr) {
 CAST_ACCESSOR(WasmJSFunction)
 
 // WasmJSFunctionData
-OBJECT_CONSTRUCTORS_IMPL(WasmJSFunctionData, Struct)
+OBJECT_CONSTRUCTORS_IMPL(WasmJSFunctionData, WasmFunctionData)
 CAST_ACCESSOR(WasmJSFunctionData)
 SMI_ACCESSORS(WasmJSFunctionData, serialized_return_count,
               kSerializedReturnCountOffset)
@@ -362,8 +372,6 @@ SMI_ACCESSORS(WasmJSFunctionData, serialized_parameter_count,
               kSerializedParameterCountOffset)
 ACCESSORS(WasmJSFunctionData, serialized_signature, PodArray<wasm::ValueType>,
           kSerializedSignatureOffset)
-ACCESSORS(WasmJSFunctionData, callable, JSReceiver, kCallableOffset)
-ACCESSORS(WasmJSFunctionData, wrapper_code, Code, kWrapperCodeOffset)
 ACCESSORS(WasmJSFunctionData, wasm_to_js_wrapper_code, Code,
           kWasmToJsWrapperCodeOffset)
 
@@ -408,6 +416,47 @@ ACCESSORS(AsmWasmData, managed_native_module, Managed<wasm::NativeModule>,
 ACCESSORS(AsmWasmData, export_wrappers, FixedArray, kExportWrappersOffset)
 ACCESSORS(AsmWasmData, uses_bitset, HeapNumber, kUsesBitsetOffset)
 
+// static
+Handle<Object> WasmObject::ReadValueAt(Isolate* isolate, Handle<HeapObject> obj,
+                                       wasm::ValueType type, uint32_t offset) {
+  Address field_address = obj->GetFieldAddress(offset);
+  switch (type.kind()) {
+    case wasm::kI8: {
+      int8_t value = base::Memory<int8_t>(field_address);
+      return handle(Smi::FromInt(value), isolate);
+    }
+    case wasm::kI16: {
+      int16_t value = base::Memory<int16_t>(field_address);
+      return handle(Smi::FromInt(value), isolate);
+    }
+    case wasm::kI32: {
+      int32_t value = base::Memory<int32_t>(field_address);
+      return isolate->factory()->NewNumberFromInt(value);
+    }
+    case wasm::kI64:
+    case wasm::kF32:
+    case wasm::kF64:
+    case wasm::kS128:
+      // TODO(ishell): implement
+      UNREACHABLE();
+
+    case wasm::kRef:
+    case wasm::kOptRef: {
+      ObjectSlot slot(field_address);
+      return handle(slot.load(isolate), isolate);
+    }
+
+    case wasm::kRtt:
+    case wasm::kRttWithDepth:
+      // Rtt values are not supposed to be made available to JavaScript side.
+      UNREACHABLE();
+
+    case wasm::kVoid:
+    case wasm::kBottom:
+      UNREACHABLE();
+  }
+}
+
 wasm::StructType* WasmStruct::type(Map map) {
   WasmTypeInfo type_info = map.wasm_type_info();
   return reinterpret_cast<wasm::StructType*>(type_info.foreign_address());
@@ -416,18 +465,46 @@ wasm::StructType* WasmStruct::type(Map map) {
 wasm::StructType* WasmStruct::GcSafeType(Map map) {
   DCHECK_EQ(WASM_STRUCT_TYPE, map.instance_type());
   HeapObject raw = HeapObject::cast(map.constructor_or_back_pointer());
-  MapWord map_word = raw.map_word();
+  MapWord map_word = raw.map_word(kRelaxedLoad);
   HeapObject forwarded =
       map_word.IsForwardingAddress() ? map_word.ToForwardingAddress() : raw;
   Foreign foreign = Foreign::cast(forwarded);
   return reinterpret_cast<wasm::StructType*>(foreign.foreign_address());
 }
 
+int WasmStruct::Size(const wasm::StructType* type) {
+  // Object size must fit into a Smi (because of filler objects), and its
+  // computation must not overflow.
+  STATIC_ASSERT(Smi::kMaxValue <= kMaxInt);
+  DCHECK_LE(type->total_fields_size(), Smi::kMaxValue - kHeaderSize);
+  return std::max(kHeaderSize + static_cast<int>(type->total_fields_size()),
+                  Heap::kMinObjectSizeInTaggedWords * kTaggedSize);
+}
+
+int WasmStruct::GcSafeSize(Map map) {
+  wasm::StructType* type = GcSafeType(map);
+  return Size(type);
+}
+
 wasm::StructType* WasmStruct::type() const { return type(map()); }
 
-ObjectSlot WasmStruct::RawField(int raw_offset) {
+Address WasmStruct::RawFieldAddress(int raw_offset) {
   int offset = WasmStruct::kHeaderSize + raw_offset;
-  return ObjectSlot(FIELD_ADDR(*this, offset));
+  return FIELD_ADDR(*this, offset);
+}
+
+ObjectSlot WasmStruct::RawField(int raw_offset) {
+  return ObjectSlot(RawFieldAddress(raw_offset));
+}
+
+// static
+Handle<Object> WasmStruct::GetField(Isolate* isolate, Handle<WasmStruct> obj,
+                                    uint32_t field_index) {
+  wasm::StructType* type = obj->type();
+  CHECK_LT(field_index, type->field_count());
+  wasm::ValueType field_type = type->field(field_index);
+  int offset = WasmStruct::kHeaderSize + type->field_offset(field_index);
+  return ReadValueAt(isolate, obj, field_type, offset);
 }
 
 wasm::ArrayType* WasmArray::type(Map map) {
@@ -439,7 +516,7 @@ wasm::ArrayType* WasmArray::type(Map map) {
 wasm::ArrayType* WasmArray::GcSafeType(Map map) {
   DCHECK_EQ(WASM_ARRAY_TYPE, map.instance_type());
   HeapObject raw = HeapObject::cast(map.constructor_or_back_pointer());
-  MapWord map_word = raw.map_word();
+  MapWord map_word = raw.map_word(kRelaxedLoad);
   HeapObject forwarded =
       map_word.IsForwardingAddress() ? map_word.ToForwardingAddress() : raw;
   Foreign foreign = Foreign::cast(forwarded);
@@ -458,14 +535,20 @@ int WasmArray::GcSafeSizeFor(Map map, int length) {
   return kHeaderSize + RoundUp(element_size * length, kTaggedSize);
 }
 
+// static
+Handle<Object> WasmArray::GetElement(Isolate* isolate, Handle<WasmArray> array,
+                                     uint32_t index) {
+  if (index >= array->length()) {
+    return isolate->factory()->undefined_value();
+  }
+  wasm::ValueType element_type = array->type()->element_type();
+  uint32_t offset =
+      WasmArray::kHeaderSize + index * element_type.element_size_bytes();
+  return ReadValueAt(isolate, array, element_type, offset);
+}
+
 void WasmTypeInfo::clear_foreign_address(Isolate* isolate) {
 #ifdef V8_HEAP_SANDBOX
-
-  // TODO(syg): V8_HEAP_SANDBOX doesn't work with pointer cage
-#ifdef V8_COMPRESS_POINTERS_IN_SHARED_CAGE
-#error "V8_HEAP_SANDBOX requires per-Isolate pointer compression cage"
-#endif
-
   // Due to the type-specific pointer tags for external pointers, we need to
   // allocate an entry in the table here even though it will just store nullptr.
   AllocateExternalPointerEntries(isolate);

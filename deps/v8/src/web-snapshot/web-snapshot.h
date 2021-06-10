@@ -27,9 +27,12 @@ class Map;
 class Object;
 class String;
 
-struct WebSnapshotData {
+struct WebSnapshotData : public std::enable_shared_from_this<WebSnapshotData> {
   uint8_t* buffer = nullptr;
   size_t buffer_size = 0;
+  WebSnapshotData() = default;
+  WebSnapshotData(const WebSnapshotData&) = delete;
+  WebSnapshotData& operator=(const WebSnapshotData&) = delete;
   ~WebSnapshotData() { free(buffer); }
 };
 
@@ -38,11 +41,25 @@ class WebSnapshotSerializerDeserializer {
   inline bool has_error() const { return error_message_ != nullptr; }
   const char* error_message() const { return error_message_; }
 
-  enum ValueType : uint8_t { STRING_ID, OBJECT_ID, FUNCTION_ID };
+  enum ValueType : uint8_t {
+    FALSE_CONSTANT,
+    TRUE_CONSTANT,
+    NULL_CONSTANT,
+    UNDEFINED_CONSTANT,
+    INTEGER,
+    DOUBLE,
+    STRING_ID,
+    OBJECT_ID,
+    FUNCTION_ID,
+    REGEXP
+  };
+
+  uint32_t FunctionKindToFunctionFlags(FunctionKind kind);
+  FunctionKind FunctionFlagsToFunctionKind(uint32_t flags);
 
   // The maximum count of items for each value type (strings, objects etc.)
   static constexpr uint32_t kMaxItemCount =
-      static_cast<uint32_t>(FixedArray::kMaxLength);
+      static_cast<uint32_t>(FixedArray::kMaxLength - 1);
   // This ensures indices and lengths can be converted between uint32_t and int
   // without problems:
   STATIC_ASSERT(kMaxItemCount < std::numeric_limits<int32_t>::max());
@@ -60,6 +77,12 @@ class WebSnapshotSerializerDeserializer {
       delete;
   WebSnapshotSerializerDeserializer& operator=(
       const WebSnapshotSerializerDeserializer&) = delete;
+
+  // Keep most common function kinds in the 7 least significant bits to make the
+  // flags fit in 1 byte.
+  using ArrowFunctionBitField = base::BitField<bool, 0, 1>;
+  using AsyncFunctionBitField = ArrowFunctionBitField::Next<bool, 1>;
+  using GeneratorFunctionBitField = AsyncFunctionBitField::Next<bool, 1>;
 };
 
 class V8_EXPORT WebSnapshotSerializer
@@ -69,7 +92,7 @@ class V8_EXPORT WebSnapshotSerializer
   ~WebSnapshotSerializer();
 
   bool TakeSnapshot(v8::Local<v8::Context> context,
-                    const std::vector<std::string>& exports,
+                    v8::Local<v8::PrimitiveArray> exports,
                     WebSnapshotData& data_out);
 
   // For inspecting the state after taking a snapshot.
@@ -107,7 +130,7 @@ class V8_EXPORT WebSnapshotSerializer
   void SerializeContext(Handle<Context> context, uint32_t& id);
   void SerializeObject(Handle<JSObject> object, uint32_t& id);
   void SerializePendingObject(Handle<JSObject> object);
-  void SerializeExport(Handle<JSObject> object, const std::string& export_name);
+  void SerializeExport(Handle<JSObject> object, Handle<String> export_name);
   void WriteValue(Handle<Object> object, ValueSerializer& serializer);
 
   ValueSerializer string_serializer_;

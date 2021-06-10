@@ -155,13 +155,6 @@ V8_INLINE Dest bit_cast(Source const& source) {
 #endif
 #endif
 
-// Define DISABLE_ASAN macro.
-#ifdef V8_USE_ADDRESS_SANITIZER
-#define DISABLE_ASAN __attribute__((no_sanitize_address))
-#else
-#define DISABLE_ASAN
-#endif
-
 // Define V8_USE_MEMORY_SANITIZER macro.
 #if defined(__has_feature)
 #if __has_feature(memory_sanitizer)
@@ -418,6 +411,15 @@ bool is_inbounds(float_t v) {
 #define IF_WASM(V, ...) EXPAND(V(__VA_ARGS__))
 #else
 #define IF_WASM(V, ...)
+#endif  // V8_ENABLE_WEBASSEMBLY
+
+// Defines IF_TSAN, to be used in macro lists for elements that should only be
+// there if TSAN is enabled.
+#ifdef V8_IS_TSAN
+// EXPAND is needed to work around MSVC's broken __VA_ARGS__ expansion.
+#define IF_TSAN(V, ...) EXPAND(V(__VA_ARGS__))
+#else
+#define IF_TSAN(V, ...)
 #endif  // V8_ENABLE_WEBASSEMBLY
 
 #endif  // V8_BASE_MACROS_H_

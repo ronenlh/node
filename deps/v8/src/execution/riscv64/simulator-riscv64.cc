@@ -93,7 +93,7 @@ static inline int32_t get_ebreak_code(Instruction* instr) {
 // SScanF not being implemented in a platform independent was through
 // ::v8::internal::OS in the same way as SNPrintF is that the Windows C Run-Time
 // Library does not provide vsscanf.
-#define SScanF sscanf  // NOLINT
+#define SScanF sscanf
 
 // The RiscvDebugger class is used by the simulator while debugging simulated
 // code.
@@ -261,6 +261,10 @@ void RiscvDebugger::Debug() {
       disasm::Disassembler dasm(converter);
       // Use a reasonably large buffer.
       v8::internal::EmbeddedVector<char, 256> buffer;
+      const char* name = sim_->builtins_.Lookup((Address)sim_->get_pc());
+      if (name != nullptr) {
+        PrintF("Call builtin:  %s\n", name);
+      }
       dasm.InstructionDecode(buffer, reinterpret_cast<byte*>(sim_->get_pc()));
       PrintF("  0x%016" PRIx64 "   %s\n", sim_->get_pc(), buffer.begin());
       last_pc = sim_->get_pc();
@@ -785,7 +789,7 @@ void Simulator::CheckICache(base::CustomMatcherHashMap* i_cache,
   }
 }
 
-Simulator::Simulator(Isolate* isolate) : isolate_(isolate) {
+Simulator::Simulator(Isolate* isolate) : isolate_(isolate), builtins_(isolate) {
   // Set up simulator support first. Some of this information is needed to
   // setup the architecture state.
   stack_size_ = FLAG_sim_stack_size * KB;
@@ -1062,7 +1066,7 @@ T Simulator::FMaxMinHelper(T a, T b, MaxMinKind kind) {
 
   T result = 0;
   if (std::isnan(a) && std::isnan(b)) {
-    result = a;
+    result = std::numeric_limits<float>::quiet_NaN();
   } else if (std::isnan(a)) {
     result = b;
   } else if (std::isnan(b)) {
@@ -1101,7 +1105,7 @@ int64_t Simulator::get_pc() const { return registers_[pc]; }
 
 // TODO(plind): refactor this messy debug code when we do unaligned access.
 void Simulator::DieOrDebug() {
-  if ((1)) {  // Flag for this was removed.
+  if (FLAG_riscv_trap_to_simulator_debugger) {
     RiscvDebugger dbg(this);
     dbg.Debug();
   } else {
@@ -1265,14 +1269,14 @@ T Simulator::ReadMem(int64_t addr, Instruction* instr) {
            addr, reinterpret_cast<intptr_t>(instr));
     DieOrDebug();
   }
-
+#ifndef V8_COMPRESS_POINTERS  // TODO(RISCV): v8:11812
   // check for natural alignment
   if ((addr & (sizeof(T) - 1)) != 0) {
     PrintF("Unaligned read at 0x%08" PRIx64 " , pc=0x%08" V8PRIxPTR "\n", addr,
            reinterpret_cast<intptr_t>(instr));
     DieOrDebug();
   }
-
+#endif
   T* ptr = reinterpret_cast<T*>(addr);
   T value = *ptr;
   return value;
@@ -1287,14 +1291,14 @@ void Simulator::WriteMem(int64_t addr, T value, Instruction* instr) {
            addr, reinterpret_cast<intptr_t>(instr));
     DieOrDebug();
   }
-
+#ifndef V8_COMPRESS_POINTERS  // TODO(RISCV): v8:11812
   // check for natural alignment
   if ((addr & (sizeof(T) - 1)) != 0) {
     PrintF("Unaligned write at 0x%08" PRIx64 " , pc=0x%08" V8PRIxPTR "\n", addr,
            reinterpret_cast<intptr_t>(instr));
     DieOrDebug();
   }
-
+#endif
   T* ptr = reinterpret_cast<T*>(addr);
   TraceMemWr(addr, value);
   *ptr = value;
@@ -2819,6 +2823,33 @@ void Simulator::DecodeRVIType() {
       // Note: No need to shift 2 for JALR's imm12, but set lowest bit to 0.
       int64_t next_pc = (rs1() + imm12()) & ~reg_t(1);
       set_pc(next_pc);
+      if (::v8::internal::FLAG_trace_sim) {
+        if ((rs1_reg() != ra || imm12() != 0)) {
+          const char* name = builtins_.Lookup((Address)next_pc);
+          if (name != nullptr) {
+            int64_t arg0 = get_register(a0);
+            int64_t arg1 = get_register(a1);
+            int64_t arg2 = get_register(a2);
+            int64_t arg3 = get_register(a3);
+            int64_t arg4 = get_register(a4);
+            int64_t arg5 = get_register(a5);
+            int64_t arg6 = get_register(a6);
+            int64_t arg7 = get_register(a7);
+            int64_t* stack_pointer =
+                reinterpret_cast<int64_t*>(get_register(sp));
+            int64_t arg8 = stack_pointer[0];
+            int64_t arg9 = stack_pointer[1];
+            PrintF(
+                "Call to Builtin at %s "
+                "a0 %08" PRIx64 " ,a1 %08" PRIx64 " ,a2 %08" PRIx64
+                " ,a3 %08" PRIx64 " ,a4 %08" PRIx64 " ,a5 %08" PRIx64
+                " ,a6 %08" PRIx64 " ,a7 %08" PRIx64 " ,0(sp) %08" PRIx64
+                " ,8(sp) %08" PRIx64 " ,sp %08" PRIx64 ",fp %08" PRIx64 " \n",
+                name, arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8,
+                arg9, get_register(sp), get_register(fp));
+          }
+        }
+      }
       break;
     }
     case RO_LB: {
@@ -3151,13 +3182,13 @@ void Simulator::DecodeCAType() {
       set_rvc_rs1s(sext_xlen(rvc_rs1s() - rvc_rs2s()));
       break;
     case RO_C_XOR:
-      set_rvc_rs1s(sext_xlen(rvc_rs1s() ^ rvc_rs2s()));
+      set_rvc_rs1s(rvc_rs1s() ^ rvc_rs2s());
       break;
     case RO_C_OR:
-      set_rvc_rs1s(sext_xlen(rvc_rs1s() | rvc_rs2s()));
+      set_rvc_rs1s(rvc_rs1s() | rvc_rs2s());
       break;
     case RO_C_AND:
-      set_rvc_rs1s(sext_xlen(rvc_rs1s() & rvc_rs2s()));
+      set_rvc_rs1s(rvc_rs1s() & rvc_rs2s());
       break;
     case RO_C_SUBW:
       set_rvc_rs1s(sext32(rvc_rs1s() - rvc_rs2s()));
@@ -3316,6 +3347,37 @@ void Simulator::DecodeCJType() {
   }
 }
 
+void Simulator::DecodeCBType() {
+  switch (instr_.RvcOpcode()) {
+    case RO_C_BNEZ:
+      if (rvc_rs1() != 0) {
+        int64_t next_pc = get_pc() + rvc_imm8_b();
+        set_pc(next_pc);
+      }
+      break;
+    case RO_C_BEQZ:
+      if (rvc_rs1() == 0) {
+        int64_t next_pc = get_pc() + rvc_imm8_b();
+        set_pc(next_pc);
+      }
+      break;
+    case RO_C_MISC_ALU:
+      if (instr_.RvcFunct2BValue() == 0b00) {  // c.srli
+        set_rvc_rs1s(sext_xlen(sext_xlen(rvc_rs1s()) >> rvc_shamt6()));
+      } else if (instr_.RvcFunct2BValue() == 0b01) {  // c.srai
+        require(rvc_shamt6() < xlen);
+        set_rvc_rs1s(sext_xlen(sext_xlen(rvc_rs1s()) >> rvc_shamt6()));
+      } else if (instr_.RvcFunct2BValue() == 0b10) {  // c.andi
+        set_rvc_rs1s(rvc_imm6() & rvc_rs1s());
+      } else {
+        UNSUPPORTED();
+      }
+      break;
+    default:
+      UNSUPPORTED();
+  }
+}
+
 // Executes the current instruction.
 void Simulator::InstructionDecode(Instruction* instr) {
   if (v8::internal::FLAG_check_icache) {
@@ -3333,7 +3395,7 @@ void Simulator::InstructionDecode(Instruction* instr) {
     dasm.InstructionDecode(buffer, reinterpret_cast<byte*>(instr));
 
     // PrintF("EXECUTING  0x%08" PRIxPTR "   %-44s\n",
-    //       reinterpret_cast<intptr_t>(instr), buffer.begin());
+    //        reinterpret_cast<intptr_t>(instr), buffer.begin());
   }
 
   instr_ = instr;
@@ -3367,6 +3429,9 @@ void Simulator::InstructionDecode(Instruction* instr) {
       break;
     case Instruction::kCJType:
       DecodeCJType();
+      break;
+    case Instruction::kCBType:
+      DecodeCBType();
       break;
     case Instruction::kCIType:
       DecodeCIType();

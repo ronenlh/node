@@ -191,8 +191,8 @@ class SharedFunctionInfo
 
   // Get the abstract code associated with the function, which will either be
   // a Code object or a BytecodeArray.
-  template <typename LocalIsolate>
-  inline AbstractCode abstract_code(LocalIsolate* isolate);
+  template <typename IsolateT>
+  inline AbstractCode abstract_code(IsolateT* isolate);
 
   // Tells whether or not this shared function info has an attached
   // BytecodeArray.
@@ -264,9 +264,8 @@ class SharedFunctionInfo
   // Returns an IsCompiledScope which reports whether the function is compiled,
   // and if compiled, will avoid the function becoming uncompiled while it is
   // held.
-  template <typename LocalIsolate>
-  inline IsCompiledScope is_compiled_scope(LocalIsolate* isolate) const;
-
+  template <typename IsolateT>
+  inline IsCompiledScope is_compiled_scope(IsolateT* isolate) const;
 
   // [internal formal parameter count]: The declared number of parameters.
   // For subclass constructors, also includes new.target.
@@ -301,8 +300,8 @@ class SharedFunctionInfo
   inline FunctionTemplateInfo get_api_func_data() const;
   inline void set_api_func_data(FunctionTemplateInfo data);
   inline bool HasBytecodeArray() const;
-  template <typename LocalIsolate>
-  inline BytecodeArray GetBytecodeArray(LocalIsolate* isolate) const;
+  template <typename IsolateT>
+  inline BytecodeArray GetBytecodeArray(IsolateT* isolate) const;
 
   inline void set_bytecode_array(BytecodeArray bytecode);
   inline Code InterpreterTrampoline() const;
@@ -333,7 +332,7 @@ class SharedFunctionInfo
   inline const wasm::FunctionSig* wasm_function_signature() const;
 #endif  // V8_ENABLE_WEBASSEMBLY
 
-  // builtin_id corresponds to the auto-generated Builtins::Name id.
+  // builtin_id corresponds to the auto-generated Builtin id.
   inline bool HasBuiltinId() const;
   inline int builtin_id() const;
   inline void set_builtin_id(int builtin_id);
@@ -417,15 +416,6 @@ class SharedFunctionInfo
   DECL_BOOLEAN_ACCESSORS(class_scope_has_private_brand)
   DECL_BOOLEAN_ACCESSORS(has_static_private_methods_or_accessors)
 
-  // True if a Code object associated with this SFI has been inserted into the
-  // compilation cache. Note that the cache entry may be removed by aging,
-  // hence the 'may'.
-  DECL_BOOLEAN_ACCESSORS(may_have_cached_code)
-
-  // Returns the cached Code object for this SFI if it exists, an empty handle
-  // otherwise.
-  MaybeHandle<Code> TryGetCachedCode(Isolate* isolate);
-
   // Is this function a top-level function (scripts, evals).
   DECL_BOOLEAN_ACCESSORS(is_toplevel)
 
@@ -461,11 +451,6 @@ class SharedFunctionInfo
   // "anonymous".  We don't set the name itself so that the system does not
   // see a binding for it.
   DECL_BOOLEAN_ACCESSORS(name_should_print_as_anonymous)
-
-  // Indicates that the function represented by the shared function info was
-  // classed as an immediately invoked function execution (IIFE) function and
-  // is only executed once.
-  DECL_BOOLEAN_ACCESSORS(is_oneshot_iife)
 
   // Whether or not the number of expected properties may change.
   DECL_BOOLEAN_ACCESSORS(are_properties_final)
@@ -557,8 +542,8 @@ class SharedFunctionInfo
     kExceedsBytecodeLimit,
     kMayContainBreakPoints,
   };
-  template <typename LocalIsolate>
-  Inlineability GetInlineability(LocalIsolate* isolate) const;
+  template <typename IsolateT>
+  Inlineability GetInlineability(IsolateT* isolate) const;
 
   // Source size of this function.
   int SourceSize();
@@ -569,8 +554,8 @@ class SharedFunctionInfo
   inline bool has_simple_parameters();
 
   // Initialize a SharedFunctionInfo from a parsed function literal.
-  template <typename LocalIsolate>
-  static void InitFromFunctionLiteral(LocalIsolate* isolate,
+  template <typename IsolateT>
+  static void InitFromFunctionLiteral(IsolateT* isolate,
                                       Handle<SharedFunctionInfo> shared_info,
                                       FunctionLiteral* lit, bool is_toplevel);
 
@@ -587,8 +572,8 @@ class SharedFunctionInfo
   static void EnsureSourcePositionsAvailable(
       Isolate* isolate, Handle<SharedFunctionInfo> shared_info);
 
-  template <typename LocalIsolate>
-  bool AreSourcePositionsAvailable(LocalIsolate* isolate) const;
+  template <typename IsolateT>
+  bool AreSourcePositionsAvailable(IsolateT* isolate) const;
 
   // Hash based on function literal id and script id.
   V8_EXPORT_PRIVATE uint32_t Hash();
@@ -672,13 +657,10 @@ class SharedFunctionInfo
   // function.
   DECL_ACCESSORS(outer_scope_info, HeapObject)
 
-  // [is_oneshot_iife_or_properties_are_final]: This bit is used to track
-  // two mutually exclusive cases. Either this SharedFunctionInfo is
-  // a oneshot_iife or we have finished parsing its properties. These cases
-  // are mutually exclusive because the properties final bit is only used by
-  // class constructors to handle lazily parsed properties and class
-  // constructors can never be oneshot iifes.
-  DECL_BOOLEAN_ACCESSORS(is_oneshot_iife_or_properties_are_final)
+  // [properties_are_final]: This bit is used to track if we have finished
+  // parsing its properties. The properties final bit is only used by
+  // class constructors to handle lazily parsed properties.
+  DECL_BOOLEAN_ACCESSORS(properties_are_final)
 
   inline void set_kind(FunctionKind kind);
 

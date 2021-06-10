@@ -9,17 +9,19 @@ import {ApiLogEntry} from './log/api.mjs';
 import {CodeLogEntry, DeoptLogEntry} from './log/code.mjs';
 import {IcLogEntry} from './log/ic.mjs';
 import {Edge, MapLogEntry} from './log/map.mjs';
+import {TickLogEntry} from './log/tick.mjs';
 import {Timeline} from './timeline.mjs';
 
 // ===========================================================================
 
 export class Processor extends LogReader {
   _profile = new Profile();
-  _mapTimeline = new Timeline();
-  _icTimeline = new Timeline();
-  _deoptTimeline = new Timeline();
-  _codeTimeline = new Timeline();
   _apiTimeline = new Timeline();
+  _codeTimeline = new Timeline();
+  _deoptTimeline = new Timeline();
+  _icTimeline = new Timeline();
+  _mapTimeline = new Timeline();
+  _tickTimeline = new Timeline();
   _formatPCRegexp = /(.*):[0-9]+:[0-9]+$/;
   _lastTimestamp = 0;
   _lastCodeLogEntry;
@@ -78,6 +80,16 @@ export class Processor extends LogReader {
       },
       'sfi-move':
           {parsers: [parseInt, parseInt], processor: this.processFunctionMove},
+      'tick': {
+        parsers:
+            [parseInt, parseInt, parseInt, parseInt, parseInt, parseVarArgs],
+        processor: this.processTick
+      },
+      'active-runtime-timer': undefined,
+      'heap-sample-begin': undefined,
+      'heap-sample-end': undefined,
+      'timer-event-start': undefined,
+      'timer-event-end': undefined,
       'map-create':
           {parsers: [parseInt, parseString], processor: this.processMapCreate},
       'map': {
@@ -213,8 +225,9 @@ export class Processor extends LogReader {
     } else {
       entry = this._profile.addCode(type, name, timestamp, start, size);
     }
-    this._lastCodeLogEntry =
-        new CodeLogEntry(type + stateName, timestamp, kind, entry);
+    this._lastCodeLogEntry = new CodeLogEntry(
+        type + stateName, timestamp,
+        Profile.getKindFromState(Profile.parseState(stateName)), kind, entry);
     this._codeTimeline.push(this._lastCodeLogEntry);
   }
 
@@ -230,17 +243,21 @@ export class Processor extends LogReader {
     this.addSourcePosition(codeEntry, logEntry);
     logEntry.functionSourcePosition = logEntry.sourcePosition;
     // custom parse deopt location
-    if (deoptLocation !== '<unknown>') {
-      const colSeparator = deoptLocation.lastIndexOf(':');
-      const rowSeparator = deoptLocation.lastIndexOf(':', colSeparator - 1);
-      const script = this.getScript(deoptLocation.substring(1, rowSeparator));
-      const line =
-          parseInt(deoptLocation.substring(rowSeparator + 1, colSeparator));
-      const column = parseInt(
-          deoptLocation.substring(colSeparator + 1, deoptLocation.length - 1));
-      logEntry.sourcePosition =
-          script.addSourcePosition(line, column, logEntry);
+    if (deoptLocation === '<unknown>') return;
+    // Handle deopt location for inlined code: <location> inlined at <location>
+    const inlinedPos = deoptLocation.indexOf(' inlined at ');
+    if (inlinedPos > 0) {
+      deoptLocation = deoptLocation.substring(0, inlinedPos)
     }
+    const colSeparator = deoptLocation.lastIndexOf(':');
+    const rowSeparator = deoptLocation.lastIndexOf(':', colSeparator - 1);
+    const script = this.getScript(deoptLocation.substring(1, rowSeparator));
+    if (!script) return;
+    const line =
+        parseInt(deoptLocation.substring(rowSeparator + 1, colSeparator));
+    const column = parseInt(
+        deoptLocation.substring(colSeparator + 1, deoptLocation.length - 1));
+    logEntry.sourcePosition = script.addSourcePosition(line, column, logEntry);
   }
 
   processScriptSource(scriptId, url, source) {
@@ -257,6 +274,30 @@ export class Processor extends LogReader {
 
   processFunctionMove(from, to) {
     this._profile.moveFunc(from, to);
+  }
+
+  processTick(
+      pc, time_ns, is_external_callback, tos_or_external_callback, vmState,
+      stack) {
+    if (is_external_callback) {
+      // Don't use PC when in external callback code, as it can point
+      // inside callback's code, and we will erroneously report
+      // that a callback calls itself. Instead we use tos_or_external_callback,
+      // as simply resetting PC will produce unaccounted ticks.
+      pc = tos_or_external_callback;
+      tos_or_external_callback = 0;
+    } else if (tos_or_external_callback) {
+      // Find out, if top of stack was pointing inside a JS function
+      // meaning that we have encountered a frameless invocation.
+      const funcEntry = this._profile.findEntry(tos_or_external_callback);
+      if (!funcEntry?.isJSFunction?.()) {
+        tos_or_external_callback = 0;
+      }
+    }
+    const entryStack = this._profile.recordTick(
+        time_ns, vmState,
+        this.processStack(pc, tos_or_external_callback, stack));
+    this._tickTimeline.push(new TickLogEntry(time_ns, vmState, entryStack))
   }
 
   processCodeSourceInfo(
@@ -436,6 +477,10 @@ export class Processor extends LogReader {
 
   get apiTimeline() {
     return this._apiTimeline;
+  }
+
+  get tickTimeline() {
+    return this._tickTimeline;
   }
 
   get scripts() {

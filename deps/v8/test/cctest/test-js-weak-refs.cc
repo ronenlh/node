@@ -815,7 +815,7 @@ TEST(TestRemoveUnregisterToken) {
 
   Handle<JSObject> token1 = CreateKey("token1", isolate);
   Handle<JSObject> token2 = CreateKey("token2", isolate);
-  Handle<Object> undefined =
+  Handle<HeapObject> undefined =
       handle(ReadOnlyRoots(isolate).undefined_value(), isolate);
 
   Handle<WeakCell> weak_cell1a = FinalizationRegistryRegister(
@@ -892,6 +892,11 @@ TEST(JSWeakRefScavengedInWorklist) {
       weak_ref = inner_scope.CloseAndEscape(inner_weak_ref);
     }
 
+    // Store weak_ref in Global such that it is part of the root set when
+    // starting incremental marking.
+    v8::Global<Value> global_weak_ref(
+        CcTest::isolate(), Utils::ToLocal(Handle<Object>::cast(weak_ref)));
+
     // Do marking. This puts the WeakRef above into the js_weak_refs worklist
     // since its target isn't marked.
     CHECK(
@@ -934,6 +939,10 @@ TEST(JSWeakRefTenuredInWorklist) {
 
     weak_ref = inner_scope.CloseAndEscape(inner_weak_ref);
   }
+  // Store weak_ref such that it is part of the root set when starting
+  // incremental marking.
+  v8::Global<Value> global_weak_ref(
+      CcTest::isolate(), Utils::ToLocal(Handle<Object>::cast(weak_ref)));
   JSWeakRef old_weak_ref_location = *weak_ref;
 
   // Do marking. This puts the WeakRef above into the js_weak_refs worklist
@@ -970,15 +979,17 @@ TEST(UnregisterTokenHeapVerifier) {
   v8::HandleScope outer_scope(isolate);
 
   {
-    // Make a new FinalizationRegistry and register an object with an unregister
-    // token that's unreachable after the IIFE returns.
+    // Make a new FinalizationRegistry and register two objects with the same
+    // unregister token that's unreachable after the IIFE returns.
     v8::HandleScope scope(isolate);
     CompileRun(
         "var token = {}; "
         "var registry = new FinalizationRegistry(function ()  {}); "
         "(function () { "
-        "  let o = {}; "
-        "  registry.register(o, {}, token); "
+        "  let o1 = {}; "
+        "  let o2 = {}; "
+        "  registry.register(o1, {}, token); "
+        "  registry.register(o2, {}, token); "
         "})();");
   }
 

@@ -99,6 +99,10 @@ class MarkingStateBase {
   MarkingWorklists::WeakContainersWorklist& weak_containers_worklist() {
     return weak_containers_worklist_;
   }
+  MarkingWorklists::RetraceMarkedObjectsWorklist::Local&
+  retrace_marked_objects_worklist() {
+    return retrace_marked_objects_worklist_;
+  }
 
   CompactionWorklists::MovableReferencesWorklist::Local*
   movable_slots_worklist() {
@@ -138,6 +142,8 @@ class MarkingStateBase {
   MarkingWorklists::EphemeronPairsWorklist::Local
       ephemeron_pairs_for_processing_worklist_;
   MarkingWorklists::WeakContainersWorklist& weak_containers_worklist_;
+  MarkingWorklists::RetraceMarkedObjectsWorklist::Local
+      retrace_marked_objects_worklist_;
   // Existence of the worklist (|movable_slot_worklist_| != nullptr) denotes
   // that compaction is currently enabled and slots must be recorded.
   std::unique_ptr<CompactionWorklists::MovableReferencesWorklist::Local>
@@ -149,8 +155,7 @@ class MarkingStateBase {
 MarkingStateBase::MarkingStateBase(HeapBase& heap,
                                    MarkingWorklists& marking_worklists,
                                    CompactionWorklists* compaction_worklists)
-    :
-      heap_(heap),
+    : heap_(heap),
       marking_worklist_(marking_worklists.marking_worklist()),
       not_fully_constructed_worklist_(
           *marking_worklists.not_fully_constructed_worklist()),
@@ -164,7 +169,9 @@ MarkingStateBase::MarkingStateBase(HeapBase& heap,
           marking_worklists.discovered_ephemeron_pairs_worklist()),
       ephemeron_pairs_for_processing_worklist_(
           marking_worklists.ephemeron_pairs_for_processing_worklist()),
-      weak_containers_worklist_(*marking_worklists.weak_containers_worklist()) {
+      weak_containers_worklist_(*marking_worklists.weak_containers_worklist()),
+      retrace_marked_objects_worklist_(
+          marking_worklists.retrace_marked_objects_worklist()) {
   if (compaction_worklists) {
     movable_slots_worklist_ =
         std::make_unique<CompactionWorklists::MovableReferencesWorklist::Local>(
@@ -174,9 +181,9 @@ MarkingStateBase::MarkingStateBase(HeapBase& heap,
 
 void MarkingStateBase::MarkAndPush(const void* object, TraceDescriptor desc) {
   DCHECK_NOT_NULL(object);
-  MarkAndPush(HeapObjectHeader::FromPayload(
-                  const_cast<void*>(desc.base_object_payload)),
-              desc);
+  MarkAndPush(
+      HeapObjectHeader::FromObject(const_cast<void*>(desc.base_object_payload)),
+      desc);
 }
 
 void MarkingStateBase::MarkAndPush(HeapObjectHeader& header,
@@ -192,7 +199,7 @@ void MarkingStateBase::MarkAndPush(HeapObjectHeader& header,
 
 bool MarkingStateBase::MarkNoPush(HeapObjectHeader& header) {
   // A GC should only mark the objects that belong in its heap.
-  DCHECK_EQ(&heap_, BasePage::FromPayload(&header)->heap());
+  DCHECK_EQ(&heap_, &BasePage::FromPayload(&header)->heap());
   // Never mark free space objects. This would e.g. hint to marking a promptly
   // freed backing store.
   DCHECK(!header.IsFree<AccessMode::kAtomic>());
@@ -202,7 +209,7 @@ bool MarkingStateBase::MarkNoPush(HeapObjectHeader& header) {
 void MarkingStateBase::MarkAndPush(HeapObjectHeader& header) {
   MarkAndPush(
       header,
-      {header.Payload(),
+      {header.ObjectStart(),
        GlobalGCInfoTable::GCInfoFromIndex(header.GetGCInfoIndex()).trace});
 }
 
@@ -222,7 +229,7 @@ void MarkingStateBase::RegisterWeakReferenceIfNeeded(const void* object,
   // Filter out already marked values. The write barrier for WeakMember
   // ensures that any newly set value after this point is kept alive and does
   // not require the callback.
-  if (HeapObjectHeader::FromPayload(desc.base_object_payload)
+  if (HeapObjectHeader::FromObject(desc.base_object_payload)
           .IsMarked<AccessMode::kAtomic>())
     return;
   RegisterWeakCallback(weak_callback, parameter);
@@ -245,7 +252,7 @@ void MarkingStateBase::ProcessWeakContainer(const void* object,
   DCHECK_NOT_NULL(object);
 
   HeapObjectHeader& header =
-      HeapObjectHeader::FromPayload(const_cast<void*>(object));
+      HeapObjectHeader::FromObject(const_cast<void*>(object));
 
   if (header.IsInConstruction<AccessMode::kAtomic>()) {
     not_fully_constructed_worklist_.Push<AccessMode::kAtomic>(&header);
@@ -255,6 +262,7 @@ void MarkingStateBase::ProcessWeakContainer(const void* object,
   // Only mark the container initially. Its buckets will be processed after
   // marking.
   if (!MarkNoPush(header)) return;
+
   RegisterWeakContainer(header);
 
   // Register final weak processing of the backing store.
@@ -264,7 +272,13 @@ void MarkingStateBase::ProcessWeakContainer(const void* object,
   // the TraceDescriptor will be nullptr. For ephemerons the callback will be
   // non-nullptr so that the container is traced and the ephemeron pairs are
   // processed.
-  if (desc.callback) PushMarked(header, desc);
+  if (desc.callback) {
+    PushMarked(header, desc);
+  } else {
+    // For weak containers, there's no trace callback and no processing loop to
+    // update the marked bytes, hence inline that here.
+    AccountMarkedBytes(header);
+  }
 }
 
 void MarkingStateBase::ProcessEphemeron(const void* key, const void* value,
@@ -273,7 +287,7 @@ void MarkingStateBase::ProcessEphemeron(const void* key, const void* value,
   // Filter out already marked keys. The write barrier for WeakMember
   // ensures that any newly set value after this point is kept alive and does
   // not require the callback.
-  if (HeapObjectHeader::FromPayload(key).IsMarked<AccessMode::kAtomic>()) {
+  if (HeapObjectHeader::FromObject(key).IsMarked<AccessMode::kAtomic>()) {
     if (value_desc.base_object_payload) {
       MarkAndPush(value_desc.base_object_payload, value_desc);
     } else {
@@ -291,7 +305,7 @@ void MarkingStateBase::AccountMarkedBytes(const HeapObjectHeader& header) {
       header.IsLargeObject<AccessMode::kAtomic>()
           ? reinterpret_cast<const LargePage*>(BasePage::FromPayload(&header))
                 ->PayloadSize()
-          : header.GetSize<AccessMode::kAtomic>());
+          : header.AllocatedSize<AccessMode::kAtomic>());
 }
 
 void MarkingStateBase::AccountMarkedBytes(size_t marked_bytes) {
@@ -308,7 +322,7 @@ class MutatorMarkingState : public MarkingStateBase {
     return MutatorMarkingState::MarkingStateBase::MarkNoPush(header);
   }
 
-  inline void PushMarkedWeakContainer(HeapObjectHeader&);
+  inline void ReTraceMarkedWeakContainer(cppgc::Visitor&, HeapObjectHeader&);
 
   inline void DynamicallyMarkAddress(ConstAddress);
 
@@ -343,13 +357,11 @@ class MutatorMarkingState : public MarkingStateBase {
   } recently_retraced_weak_containers_;
 };
 
-void MutatorMarkingState::PushMarkedWeakContainer(HeapObjectHeader& header) {
+void MutatorMarkingState::ReTraceMarkedWeakContainer(cppgc::Visitor& visitor,
+                                                     HeapObjectHeader& header) {
   DCHECK(weak_containers_worklist_.Contains(&header));
   recently_retraced_weak_containers_.Insert(&header);
-  PushMarked(
-      header,
-      {header.Payload(),
-       GlobalGCInfoTable::GCInfoFromIndex(header.GetGCInfoIndex()).trace});
+  retrace_marked_objects_worklist().Push(&header);
 }
 
 void MutatorMarkingState::DynamicallyMarkAddress(ConstAddress address) {
@@ -359,7 +371,7 @@ void MutatorMarkingState::DynamicallyMarkAddress(ConstAddress address) {
   DCHECK(!header.IsInConstruction());
   if (MarkNoPush(header)) {
     marking_worklist_.Push(
-        {reinterpret_cast<void*>(header.Payload()),
+        {reinterpret_cast<void*>(header.ObjectStart()),
          GlobalGCInfoTable::GCInfoFromIndex(header.GetGCInfoIndex()).trace});
   }
 }
@@ -371,7 +383,7 @@ void MutatorMarkingState::InvokeWeakRootsCallbackIfNeeded(
   // the callback instead of registering it.
 #if DEBUG
   const HeapObjectHeader& header =
-      HeapObjectHeader::FromPayload(desc.base_object_payload);
+      HeapObjectHeader::FromObject(desc.base_object_payload);
   DCHECK_IMPLIES(header.IsInConstruction(), header.IsMarked());
 #endif  // DEBUG
   weak_callback(LivenessBrokerFactory::Create(), parameter);

@@ -162,6 +162,7 @@ constexpr const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
     CASE_OP(CallRef, "call_ref")
     CASE_OP(ReturnCallRef, "return_call_ref")
     CASE_OP(BrOnNull, "br_on_null")
+    CASE_OP(BrOnNonNull, "br_on_non_null")
     CASE_OP(Drop, "drop")
     CASE_OP(Select, "select")
     CASE_OP(SelectWithType, "select")
@@ -186,6 +187,8 @@ constexpr const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
     CASE_INT_OP(StoreMem16, "store16")
     CASE_I64_OP(StoreMem32, "store32")
     CASE_S128_OP(StoreMem, "store128")
+    CASE_OP(RefEq, "ref.eq")
+    CASE_OP(Let, "let")
 
     // Exception handling opcodes.
     CASE_OP(Try, "try")
@@ -390,16 +393,19 @@ constexpr const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
     CASE_OP(ArrayGet, "array.get")
     CASE_OP(ArrayGetS, "array.get_s")
     CASE_OP(ArrayGetU, "array.get_u")
-    CASE_OP(ArrayLen, "array.len")
     CASE_OP(ArraySet, "array.set")
+    CASE_OP(ArrayLen, "array.len")
+    CASE_OP(ArrayCopy, "array.copy")
     CASE_OP(I31New, "i31.new")
     CASE_OP(I31GetS, "i31.get_s")
     CASE_OP(I31GetU, "i31.get_u")
     CASE_OP(RttCanon, "rtt.canon")
     CASE_OP(RttSub, "rtt.sub")
+    CASE_OP(RttFreshSub, "rtt.fresh_sub")
     CASE_OP(RefTest, "ref.test")
     CASE_OP(RefCast, "ref.cast")
     CASE_OP(BrOnCast, "br_on_cast")
+    CASE_OP(BrOnCastFail, "br_on_cast_fail")
     CASE_OP(RefIsFunc, "ref.is_func")
     CASE_OP(RefIsData, "ref.is_data")
     CASE_OP(RefIsI31, "ref.is_i31")
@@ -409,8 +415,9 @@ constexpr const char* WasmOpcodes::OpcodeName(WasmOpcode opcode) {
     CASE_OP(BrOnFunc, "br_on_func")
     CASE_OP(BrOnData, "br_on_data")
     CASE_OP(BrOnI31, "br_on_i31")
-    CASE_OP(RefEq, "ref.eq")
-    CASE_OP(Let, "let")
+    CASE_OP(BrOnNonFunc, "br_on_non_func")
+    CASE_OP(BrOnNonData, "br_on_non_data")
+    CASE_OP(BrOnNonI31, "br_on_non_i31")
 
     case kNumericPrefix:
     case kSimdPrefix:
@@ -629,16 +636,12 @@ constexpr const FunctionSig* WasmOpcodes::Signature(WasmOpcode opcode) {
     case kNumericPrefix:
       return impl::kCachedSigs[impl::kNumericExprSigTable[opcode & 0xFF]];
     default:
-#if V8_HAS_CXX14_CONSTEXPR
       UNREACHABLE();  // invalid prefix.
-#else
-      return nullptr;
-#endif
   }
 }
 
 constexpr const FunctionSig* WasmOpcodes::AsmjsSignature(WasmOpcode opcode) {
-  CONSTEXPR_DCHECK(opcode < impl::kSimpleAsmjsExprSigTable.size());
+  DCHECK_GT(impl::kSimpleAsmjsExprSigTable.size(), opcode);
   return impl::kCachedSigs[impl::kSimpleAsmjsExprSigTable[opcode]];
 }
 

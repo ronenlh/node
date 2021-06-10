@@ -58,7 +58,7 @@ class SweeperTest : public testing::TestWithHeap {
   }
 
   void MarkObject(void* payload) {
-    HeapObjectHeader& header = HeapObjectHeader::FromPayload(payload);
+    HeapObjectHeader& header = HeapObjectHeader::FromObject(payload);
     header.TryMarkAtomic();
   }
 
@@ -87,7 +87,7 @@ TEST_F(SweeperTest, DontSweepMarkedNormalObject) {
   auto* object = MakeGarbageCollected<Type>(GetAllocationHandle());
   MarkObject(object);
   BasePage* page = BasePage::FromPayload(object);
-  BaseSpace* space = page->space();
+  BaseSpace& space = page->space();
 
   EXPECT_EQ(0u, g_destructor_callcount);
 
@@ -95,7 +95,7 @@ TEST_F(SweeperTest, DontSweepMarkedNormalObject) {
 
   EXPECT_EQ(0u, g_destructor_callcount);
   // Check that page is returned back to the space.
-  EXPECT_NE(space->end(), std::find(space->begin(), space->end(), page));
+  EXPECT_NE(space.end(), std::find(space.begin(), space.end(), page));
   EXPECT_NE(nullptr, GetBackend()->Lookup(reinterpret_cast<Address>(object)));
 }
 
@@ -105,7 +105,7 @@ TEST_F(SweeperTest, SweepUnmarkedLargeObject) {
 
   auto* object = MakeGarbageCollected<Type>(GetAllocationHandle());
   BasePage* page = BasePage::FromPayload(object);
-  BaseSpace* space = page->space();
+  BaseSpace& space = page->space();
 
   EXPECT_EQ(0u, g_destructor_callcount);
 
@@ -113,7 +113,7 @@ TEST_F(SweeperTest, SweepUnmarkedLargeObject) {
 
   EXPECT_EQ(1u, g_destructor_callcount);
   // Check that page is gone.
-  EXPECT_EQ(space->end(), std::find(space->begin(), space->end(), page));
+  EXPECT_EQ(space.end(), std::find(space.begin(), space.end(), page));
   EXPECT_EQ(nullptr, GetBackend()->Lookup(reinterpret_cast<Address>(object)));
 }
 
@@ -124,7 +124,7 @@ TEST_F(SweeperTest, DontSweepMarkedLargeObject) {
   auto* object = MakeGarbageCollected<Type>(GetAllocationHandle());
   MarkObject(object);
   BasePage* page = BasePage::FromPayload(object);
-  BaseSpace* space = page->space();
+  BaseSpace& space = page->space();
 
   EXPECT_EQ(0u, g_destructor_callcount);
 
@@ -132,7 +132,7 @@ TEST_F(SweeperTest, DontSweepMarkedLargeObject) {
 
   EXPECT_EQ(0u, g_destructor_callcount);
   // Check that page is returned back to the space.
-  EXPECT_NE(space->end(), std::find(space->begin(), space->end(), page));
+  EXPECT_NE(space.end(), std::find(space.begin(), space.end(), page));
   EXPECT_NE(nullptr, GetBackend()->Lookup(reinterpret_cast<Address>(object)));
 }
 
@@ -196,13 +196,13 @@ TEST_F(SweeperTest, CoalesceFreeListEntries) {
   MarkObject(object4);
 
   Address object2_start =
-      reinterpret_cast<Address>(&HeapObjectHeader::FromPayload(object2));
+      reinterpret_cast<Address>(&HeapObjectHeader::FromObject(object2));
   Address object3_end =
-      reinterpret_cast<Address>(&HeapObjectHeader::FromPayload(object3)) +
-      HeapObjectHeader::FromPayload(object3).GetSize();
+      reinterpret_cast<Address>(&HeapObjectHeader::FromObject(object3)) +
+      HeapObjectHeader::FromObject(object3).AllocatedSize();
 
   const BasePage* page = BasePage::FromPayload(object2);
-  const FreeList& freelist = NormalPageSpace::From(page->space())->free_list();
+  const FreeList& freelist = NormalPageSpace::From(page->space()).free_list();
 
   const FreeList::Block coalesced_block = {
       object2_start, static_cast<size_t>(object3_end - object2_start)};
@@ -249,8 +249,8 @@ TEST_F(SweeperTest, UnmarkObjects) {
       MakeGarbageCollected<GCed<kLargeObjectSizeThreshold * 2>>(
           GetAllocationHandle());
 
-  auto& normal_object_header = HeapObjectHeader::FromPayload(normal_object);
-  auto& large_object_header = HeapObjectHeader::FromPayload(large_object);
+  auto& normal_object_header = HeapObjectHeader::FromObject(normal_object);
+  auto& large_object_header = HeapObjectHeader::FromObject(large_object);
 
   normal_object_header.TryMarkAtomic();
   large_object_header.TryMarkAtomic();
@@ -324,6 +324,53 @@ TEST_F(SweeperTest, LazySweepingDuringAllocation) {
   EXPECT_TRUE((new_object2 == expected_address_on_first_page) ||
               (new_object2 == expected_address_on_second_page));
   EXPECT_NE(new_object1, new_object2);
+}
+
+TEST_F(SweeperTest, LazySweepingNormalPages) {
+  using GCedObject = GCed<sizeof(size_t)>;
+  EXPECT_EQ(0u, g_destructor_callcount);
+  PreciseGC();
+  EXPECT_EQ(0u, g_destructor_callcount);
+  MakeGarbageCollected<GCedObject>(GetAllocationHandle());
+  static constexpr Heap::Config config = {
+      Heap::Config::CollectionType::kMajor,
+      Heap::Config::StackState::kNoHeapPointers,
+      Heap::Config::MarkingType::kAtomic,
+      Heap::Config::SweepingType::kIncrementalAndConcurrent};
+  Heap::From(GetHeap())->CollectGarbage(config);
+  EXPECT_EQ(0u, g_destructor_callcount);
+  MakeGarbageCollected<GCedObject>(GetAllocationHandle());
+  EXPECT_EQ(1u, g_destructor_callcount);
+  PreciseGC();
+  EXPECT_EQ(2u, g_destructor_callcount);
+}
+
+namespace {
+class AllocatingFinalizer : public GarbageCollected<AllocatingFinalizer> {
+ public:
+  static size_t destructor_callcount_;
+  explicit AllocatingFinalizer(AllocationHandle& allocation_handle)
+      : allocation_handle_(allocation_handle) {}
+  ~AllocatingFinalizer() {
+    MakeGarbageCollected<GCed<sizeof(size_t)>>(allocation_handle_);
+    ++destructor_callcount_;
+  }
+  void Trace(Visitor*) const {}
+
+ private:
+  AllocationHandle& allocation_handle_;
+};
+size_t AllocatingFinalizer::destructor_callcount_ = 0;
+}  // namespace
+
+TEST_F(SweeperTest, AllocationDuringFinalizationIsNotSwept) {
+  AllocatingFinalizer::destructor_callcount_ = 0;
+  g_destructor_callcount = 0;
+  MakeGarbageCollected<AllocatingFinalizer>(GetAllocationHandle(),
+                                            GetAllocationHandle());
+  PreciseGC();
+  EXPECT_LT(0u, AllocatingFinalizer::destructor_callcount_);
+  EXPECT_EQ(0u, g_destructor_callcount);
 }
 
 }  // namespace internal

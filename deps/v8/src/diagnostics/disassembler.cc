@@ -129,7 +129,7 @@ const char* V8NameConverter::RootRelativeName(int offset) const {
   const unsigned kExtRefsTableSize = ExternalReferenceTable::kSizeInBytes;
   const int kBuiltinsTableStart = IsolateData::builtins_table_offset();
   const unsigned kBuiltinsTableSize =
-      Builtins::builtin_count * kSystemPointerSize;
+      Builtins::kBuiltinCount * kSystemPointerSize;
 
   if (static_cast<unsigned>(offset - kRootsTableStart) < kRootsTableSize) {
     uint32_t offset_in_roots_table = offset - kRootsTableStart;
@@ -166,8 +166,8 @@ const char* V8NameConverter::RootRelativeName(int offset) const {
              kBuiltinsTableSize) {
     uint32_t offset_in_builtins_table = (offset - kBuiltinsTableStart);
 
-    Builtins::Name builtin_id = static_cast<Builtins::Name>(
-        offset_in_builtins_table / kSystemPointerSize);
+    Builtin builtin_id =
+        static_cast<Builtin>(offset_in_builtins_table / kSystemPointerSize);
 
     const char* name = Builtins::name(builtin_id);
     SNPrintF(v8_buffer_, "builtin (%s)", name);
@@ -237,10 +237,11 @@ static void PrintRelocInfo(StringBuilder* out, Isolate* isolate,
     out->AddFormatted("    ;; %sobject: %s",
                       is_compressed ? "(compressed) " : "", obj_name.get());
   } else if (rmode == RelocInfo::EXTERNAL_REFERENCE) {
+    Address address = relocinfo->target_external_reference();
     const char* reference_name =
-        ref_encoder ? ref_encoder->NameOfAddress(
-                          isolate, relocinfo->target_external_reference())
-                    : "unknown";
+        ref_encoder
+            ? ref_encoder->NameOfAddress(isolate, address)
+            : ExternalReferenceTable::NameOfIsolateIndependentAddress(address);
     out->AddFormatted("    ;; external reference (%s)", reference_name);
   } else if (RelocInfo::IsCodeTargetMode(rmode)) {
     out->AddFormatted("    ;; code:");
@@ -441,14 +442,16 @@ int Disassembler::Decode(Isolate* isolate, std::ostream* os, byte* begin,
                   "Builtins disassembly requires a readable .text section");
   V8NameConverter v8NameConverter(isolate, code);
   if (isolate) {
-    // We have an isolate, so support external reference names.
+    // We have an isolate, so support external reference names from V8 and
+    // embedder.
     SealHandleScope shs(isolate);
     DisallowGarbageCollection no_alloc;
     ExternalReferenceEncoder ref_encoder(isolate);
     return DecodeIt(isolate, &ref_encoder, os, code, v8NameConverter, begin,
                     end, current_pc);
   } else {
-    // No isolate => isolate-independent code. No external reference names.
+    // No isolate => isolate-independent code. Only V8 External references
+    // available.
     return DecodeIt(nullptr, nullptr, os, code, v8NameConverter, begin, end,
                     current_pc);
   }

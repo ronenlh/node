@@ -62,7 +62,6 @@ class StatsCounter;
   V(is_profiling_address, "Isolate::is_profiling")                             \
   V(debug_suspended_generator_address,                                         \
     "Debug::step_suspended_generator_address()")                               \
-  V(debug_restart_fp_address, "Debug::restart_fp_address()")                   \
   V(fast_c_call_caller_fp_address,                                             \
     "IsolateData::fast_c_call_caller_fp_address")                              \
   V(fast_c_call_caller_pc_address,                                             \
@@ -170,10 +169,13 @@ class StatsCounter;
   V(jsarray_array_join_concat_to_sequential_string,                            \
     "jsarray_array_join_concat_to_sequential_string")                          \
   V(jsreceiver_create_identity_hash, "jsreceiver_create_identity_hash")        \
+  V(length_tracking_gsab_backed_typed_array_length,                            \
+    "LengthTrackingGsabBackedTypedArrayLength")                                \
   V(libc_memchr_function, "libc_memchr")                                       \
   V(libc_memcpy_function, "libc_memcpy")                                       \
   V(libc_memmove_function, "libc_memmove")                                     \
   V(libc_memset_function, "libc_memset")                                       \
+  V(relaxed_memcpy_function, "relaxed_memcpy")                                 \
   V(mod_two_doubles_operation, "mod_two_doubles")                              \
   V(mutable_big_int_absolute_add_and_canonicalize_function,                    \
     "MutableBigInt_AbsoluteAddAndCanonicalize")                                \
@@ -264,6 +266,10 @@ class StatsCounter;
   V(atomic_pair_exchange_function, "atomic_pair_exchange_function")            \
   V(atomic_pair_compare_exchange_function,                                     \
     "atomic_pair_compare_exchange_function")                                   \
+  IF_TSAN(V, tsan_relaxed_store_function_32_bits,                              \
+          "tsan_relaxed_store_function_32_bits")                               \
+  IF_TSAN(V, tsan_relaxed_store_function_64_bits,                              \
+          "tsan_relaxed_store_function_64_bits")                               \
   V(js_finalization_registry_remove_cell_from_unregister_token_map,            \
     "JSFinalizationRegistry::RemoveCellFromUnregisterTokenMap")                \
   V(re_match_for_call_from_js, "IrregexpInterpreter::MatchForCallFromJs")      \
@@ -338,10 +344,11 @@ class ExternalReference {
     PROFILING_GETTER_CALL
   };
 
-  static constexpr int kExternalReferenceCount =
 #define COUNT_EXTERNAL_REFERENCE(name, desc) +1
-      EXTERNAL_REFERENCE_LIST(COUNT_EXTERNAL_REFERENCE)
-          EXTERNAL_REFERENCE_LIST_WITH_ISOLATE(COUNT_EXTERNAL_REFERENCE);
+  static constexpr int kExternalReferenceCountIsolateIndependent =
+      EXTERNAL_REFERENCE_LIST(COUNT_EXTERNAL_REFERENCE);
+  static constexpr int kExternalReferenceCountIsolateDependent =
+      EXTERNAL_REFERENCE_LIST_WITH_ISOLATE(COUNT_EXTERNAL_REFERENCE);
 #undef COUNT_EXTERNAL_REFERENCE
 
   ExternalReference() : address_(kNullAddress) {}

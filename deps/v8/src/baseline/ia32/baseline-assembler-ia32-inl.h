@@ -119,16 +119,16 @@ void BaselineAssembler::JumpIfNotSmi(Register value, Label* target,
   __ JumpIfNotSmi(value, target, distance);
 }
 
-void BaselineAssembler::CallBuiltin(Builtins::Name builtin) {
+void BaselineAssembler::CallBuiltin(Builtin builtin) {
   __ RecordCommentForOffHeapTrampoline(builtin);
-  __ Call(__ EntryFromBuiltinIndexAsOperand(builtin));
-  if (FLAG_code_comments) __ RecordComment("]");
+  __ Call(__ EntryFromBuiltinAsOperand(builtin));
+  __ RecordComment("]");
 }
 
-void BaselineAssembler::TailCallBuiltin(Builtins::Name builtin) {
+void BaselineAssembler::TailCallBuiltin(Builtin builtin) {
   __ RecordCommentForOffHeapTrampoline(builtin);
-  __ jmp(__ EntryFromBuiltinIndexAsOperand(builtin));
-  if (FLAG_code_comments) __ RecordComment("]");
+  __ jmp(__ EntryFromBuiltinAsOperand(builtin));
+  __ RecordComment("]");
 }
 
 void BaselineAssembler::Test(Register value, int mask) {
@@ -147,7 +147,7 @@ void BaselineAssembler::CmpObjectType(Register object,
 }
 void BaselineAssembler::CmpInstanceType(Register map,
                                         InstanceType instance_type) {
-  if (emit_debug_code()) {
+  if (FLAG_debug_code) {
     __ movd(xmm0, eax);
     __ AssertNotSmi(map);
     __ CmpObjectType(map, MAP_TYPE, eax);
@@ -320,7 +320,7 @@ void BaselineAssembler::StoreTaggedFieldWithWriteBarrier(Register target,
   Register scratch = scratch_scope.AcquireScratch();
   DCHECK(!AreAliased(scratch, target, value));
   __ mov(FieldOperand(target, offset), value);
-  __ RecordWriteField(target, offset, value, scratch, kDontSaveFPRegs);
+  __ RecordWriteField(target, offset, value, scratch, SaveFPRegsMode::kIgnore);
 }
 void BaselineAssembler::StoreTaggedFieldNoWriteBarrier(Register target,
                                                        int offset,

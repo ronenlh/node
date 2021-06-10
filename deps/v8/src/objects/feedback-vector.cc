@@ -54,6 +54,7 @@ static bool IsPropertyNameFeedback(MaybeObject feedback) {
   Symbol symbol = Symbol::cast(heap_object);
   ReadOnlyRoots roots = symbol.GetReadOnlyRoots();
   return symbol != roots.uninitialized_symbol() &&
+         symbol != roots.mega_dom_symbol() &&
          symbol != roots.megamorphic_symbol();
 }
 
@@ -75,8 +76,8 @@ void FeedbackMetadata::SetKind(FeedbackSlot slot, FeedbackSlotKind kind) {
 }
 
 // static
-template <typename LocalIsolate>
-Handle<FeedbackMetadata> FeedbackMetadata::New(LocalIsolate* isolate,
+template <typename IsolateT>
+Handle<FeedbackMetadata> FeedbackMetadata::New(IsolateT* isolate,
                                                const FeedbackVectorSpec* spec) {
   auto* factory = isolate->factory();
 
@@ -253,8 +254,6 @@ Handle<FeedbackVector> FeedbackVector::New(
   DCHECK_EQ(vector->optimization_marker(),
             FLAG_log_function_events ? OptimizationMarker::kLogFirstExecution
                                      : OptimizationMarker::kNone);
-  // TODO(mythria): This might change if NCI code is installed on feedback
-  // vector. Update this accordingly.
   DCHECK_EQ(vector->optimization_tier(), OptimizationTier::kNone);
   DCHECK_EQ(vector->invocation_count(), 0);
   DCHECK_EQ(vector->profiler_ticks(), 0);
@@ -332,7 +331,7 @@ Handle<FeedbackVector> NewFeedbackVectorForTesting(
   Handle<FeedbackMetadata> metadata = FeedbackMetadata::New(isolate, spec);
   Handle<SharedFunctionInfo> shared =
       isolate->factory()->NewSharedFunctionInfoForBuiltin(
-          isolate->factory()->empty_string(), Builtins::kIllegal);
+          isolate->factory()->empty_string(), Builtin::kIllegal);
   // Set the raw feedback metadata to circumvent checks that we are not
   // overwriting existing metadata.
   shared->set_raw_outer_scope_info_or_feedback_metadata(*metadata);
@@ -676,6 +675,13 @@ bool FeedbackNexus::ConfigureMegamorphic() {
   return false;
 }
 
+void FeedbackNexus::ConfigureMegaDOM(const MaybeObjectHandle& handler) {
+  DisallowGarbageCollection no_gc;
+  MaybeObject sentinel = MegaDOMSentinel();
+
+  SetFeedback(sentinel, SKIP_WRITE_BARRIER, *handler, UPDATE_WRITE_BARRIER);
+}
+
 bool FeedbackNexus::ConfigureMegamorphic(IcCheckType property_type) {
   DisallowGarbageCollection no_gc;
   MaybeObject sentinel = MegamorphicSentinel();
@@ -736,6 +742,10 @@ InlineCacheState FeedbackNexus::ic_state() const {
       }
       if (feedback == MegamorphicSentinel()) {
         return MEGAMORPHIC;
+      }
+      if (feedback == MegaDOMSentinel()) {
+        DCHECK(IsLoadICKind(kind()));
+        return MEGADOM;
       }
       if (feedback->IsWeakOrCleared()) {
         // Don't check if the map is cleared.
@@ -982,11 +992,10 @@ void FeedbackNexus::SetSpeculationMode(SpeculationMode mode) {
   Object call_count = GetFeedbackExtra()->cast<Object>();
   CHECK(call_count.IsSmi());
   uint32_t count = static_cast<uint32_t>(Smi::ToInt(call_count));
-  uint32_t value = CallCountField::encode(CallCountField::decode(count));
-  int result = static_cast<int>(value | SpeculationModeField::encode(mode));
+  count = SpeculationModeField::update(count, mode);
   MaybeObject feedback = GetFeedback();
   // We can skip the write barrier for {feedback} because it's not changing.
-  SetFeedback(feedback, SKIP_WRITE_BARRIER, Smi::FromInt(result),
+  SetFeedback(feedback, SKIP_WRITE_BARRIER, Smi::FromInt(count),
               SKIP_WRITE_BARRIER);
 }
 
@@ -997,6 +1006,15 @@ SpeculationMode FeedbackNexus::GetSpeculationMode() {
   CHECK(call_count.IsSmi());
   uint32_t value = static_cast<uint32_t>(Smi::ToInt(call_count));
   return SpeculationModeField::decode(value);
+}
+
+CallFeedbackContent FeedbackNexus::GetCallFeedbackContent() {
+  DCHECK(IsCallICKind(kind()));
+
+  Object call_count = GetFeedbackExtra()->cast<Object>();
+  CHECK(call_count.IsSmi());
+  uint32_t value = static_cast<uint32_t>(Smi::ToInt(call_count));
+  return CallFeedbackContentField::decode(value);
 }
 
 float FeedbackNexus::ComputeCallFrequency() {
@@ -1156,18 +1174,18 @@ namespace {
 bool BuiltinHasKeyedAccessStoreMode(int builtin_index) {
   DCHECK(Builtins::IsBuiltinId(builtin_index));
   switch (builtin_index) {
-    case Builtins::kKeyedStoreIC_SloppyArguments_Standard:
-    case Builtins::kKeyedStoreIC_SloppyArguments_GrowNoTransitionHandleCOW:
-    case Builtins::kKeyedStoreIC_SloppyArguments_NoTransitionIgnoreOOB:
-    case Builtins::kKeyedStoreIC_SloppyArguments_NoTransitionHandleCOW:
-    case Builtins::kStoreFastElementIC_Standard:
-    case Builtins::kStoreFastElementIC_GrowNoTransitionHandleCOW:
-    case Builtins::kStoreFastElementIC_NoTransitionIgnoreOOB:
-    case Builtins::kStoreFastElementIC_NoTransitionHandleCOW:
-    case Builtins::kElementsTransitionAndStore_Standard:
-    case Builtins::kElementsTransitionAndStore_GrowNoTransitionHandleCOW:
-    case Builtins::kElementsTransitionAndStore_NoTransitionIgnoreOOB:
-    case Builtins::kElementsTransitionAndStore_NoTransitionHandleCOW:
+    case Builtin::kKeyedStoreIC_SloppyArguments_Standard:
+    case Builtin::kKeyedStoreIC_SloppyArguments_GrowNoTransitionHandleCOW:
+    case Builtin::kKeyedStoreIC_SloppyArguments_NoTransitionIgnoreOOB:
+    case Builtin::kKeyedStoreIC_SloppyArguments_NoTransitionHandleCOW:
+    case Builtin::kStoreFastElementIC_Standard:
+    case Builtin::kStoreFastElementIC_GrowNoTransitionHandleCOW:
+    case Builtin::kStoreFastElementIC_NoTransitionIgnoreOOB:
+    case Builtin::kStoreFastElementIC_NoTransitionHandleCOW:
+    case Builtin::kElementsTransitionAndStore_Standard:
+    case Builtin::kElementsTransitionAndStore_GrowNoTransitionHandleCOW:
+    case Builtin::kElementsTransitionAndStore_NoTransitionIgnoreOOB:
+    case Builtin::kElementsTransitionAndStore_NoTransitionHandleCOW:
       return true;
     default:
       return false;
@@ -1178,21 +1196,21 @@ bool BuiltinHasKeyedAccessStoreMode(int builtin_index) {
 KeyedAccessStoreMode KeyedAccessStoreModeForBuiltin(int builtin_index) {
   DCHECK(BuiltinHasKeyedAccessStoreMode(builtin_index));
   switch (builtin_index) {
-    case Builtins::kKeyedStoreIC_SloppyArguments_Standard:
-    case Builtins::kStoreFastElementIC_Standard:
-    case Builtins::kElementsTransitionAndStore_Standard:
+    case Builtin::kKeyedStoreIC_SloppyArguments_Standard:
+    case Builtin::kStoreFastElementIC_Standard:
+    case Builtin::kElementsTransitionAndStore_Standard:
       return STANDARD_STORE;
-    case Builtins::kKeyedStoreIC_SloppyArguments_GrowNoTransitionHandleCOW:
-    case Builtins::kStoreFastElementIC_GrowNoTransitionHandleCOW:
-    case Builtins::kElementsTransitionAndStore_GrowNoTransitionHandleCOW:
+    case Builtin::kKeyedStoreIC_SloppyArguments_GrowNoTransitionHandleCOW:
+    case Builtin::kStoreFastElementIC_GrowNoTransitionHandleCOW:
+    case Builtin::kElementsTransitionAndStore_GrowNoTransitionHandleCOW:
       return STORE_AND_GROW_HANDLE_COW;
-    case Builtins::kKeyedStoreIC_SloppyArguments_NoTransitionIgnoreOOB:
-    case Builtins::kStoreFastElementIC_NoTransitionIgnoreOOB:
-    case Builtins::kElementsTransitionAndStore_NoTransitionIgnoreOOB:
+    case Builtin::kKeyedStoreIC_SloppyArguments_NoTransitionIgnoreOOB:
+    case Builtin::kStoreFastElementIC_NoTransitionIgnoreOOB:
+    case Builtin::kElementsTransitionAndStore_NoTransitionIgnoreOOB:
       return STORE_IGNORE_OUT_OF_BOUNDS;
-    case Builtins::kKeyedStoreIC_SloppyArguments_NoTransitionHandleCOW:
-    case Builtins::kStoreFastElementIC_NoTransitionHandleCOW:
-    case Builtins::kElementsTransitionAndStore_NoTransitionHandleCOW:
+    case Builtin::kKeyedStoreIC_SloppyArguments_NoTransitionHandleCOW:
+    case Builtin::kStoreFastElementIC_NoTransitionHandleCOW:
+    case Builtin::kElementsTransitionAndStore_NoTransitionHandleCOW:
       return STORE_HANDLE_COW;
     default:
       UNREACHABLE();
@@ -1405,52 +1423,6 @@ std::vector<Handle<String>> FeedbackNexus::GetTypesForSourcePositions(
   }
 
   return types_for_position;
-}
-
-namespace {
-
-Handle<JSObject> ConvertToJSObject(Isolate* isolate,
-                                   Handle<SimpleNumberDictionary> feedback) {
-  Handle<JSObject> type_profile =
-      isolate->factory()->NewJSObject(isolate->object_function());
-
-  for (int index = SimpleNumberDictionary::kElementsStartIndex;
-       index < feedback->length();
-       index += SimpleNumberDictionary::kEntrySize) {
-    int key_index = index + SimpleNumberDictionary::kEntryKeyIndex;
-    Object key = feedback->get(key_index);
-    if (key.IsSmi()) {
-      int value_index = index + SimpleNumberDictionary::kEntryValueIndex;
-
-      Handle<ArrayList> position_specific_types(
-          ArrayList::cast(feedback->get(value_index)), isolate);
-
-      int position = Smi::ToInt(key);
-      JSObject::AddDataElement(
-          type_profile, position,
-          isolate->factory()->NewJSArrayWithElements(
-              ArrayList::Elements(isolate, position_specific_types)),
-          PropertyAttributes::NONE);
-    }
-  }
-  return type_profile;
-}
-}  // namespace
-
-JSObject FeedbackNexus::GetTypeProfile() const {
-  DCHECK(IsTypeProfileKind(kind()));
-  Isolate* isolate = GetIsolate();
-
-  MaybeObject const feedback = GetFeedback();
-
-  if (feedback == UninitializedSentinel()) {
-    return *isolate->factory()->NewJSObject(isolate->object_function());
-  }
-
-  return *ConvertToJSObject(isolate,
-                            handle(SimpleNumberDictionary::cast(
-                                       feedback->GetHeapObjectAssumeStrong()),
-                                   isolate));
 }
 
 void FeedbackNexus::ResetTypeProfile() {

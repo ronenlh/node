@@ -7,6 +7,7 @@
 #include "include/v8-fast-api-calls.h"
 #include "src/base/bits.h"
 #include "src/codegen/code-factory.h"
+#include "src/codegen/interface-descriptors-inl.h"
 #include "src/codegen/machine-type.h"
 #include "src/common/ptr-compr-inl.h"
 #include "src/compiler/access-builder.h"
@@ -16,11 +17,13 @@
 #include "src/compiler/js-graph.h"
 #include "src/compiler/js-heap-broker.h"
 #include "src/compiler/linkage.h"
+#include "src/compiler/memory-lowering.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/node-origin-table.h"
 #include "src/compiler/node-properties.h"
 #include "src/compiler/node.h"
 #include "src/compiler/schedule.h"
+#include "src/compiler/select-lowering.h"
 #include "src/execution/frames.h"
 #include "src/heap/factory-inl.h"
 #include "src/objects/heap-number.h"
@@ -31,10 +34,13 @@ namespace v8 {
 namespace internal {
 namespace compiler {
 
+enum class MaintainSchedule { kMaintain, kDiscard };
+enum class MaskArrayIndexEnable { kDoNotMaskArrayIndex, kMaskArrayIndex };
+
 class EffectControlLinearizer {
  public:
   EffectControlLinearizer(JSGraph* js_graph, Schedule* schedule,
-                          Zone* temp_zone,
+                          JSGraphAssembler* graph_assembler, Zone* temp_zone,
                           SourcePositionTable* source_positions,
                           NodeOriginTable* node_origins,
                           MaskArrayIndexEnable mask_array_index,
@@ -48,8 +54,7 @@ class EffectControlLinearizer {
         source_positions_(source_positions),
         node_origins_(node_origins),
         broker_(broker),
-        graph_assembler_(js_graph, temp_zone, base::nullopt,
-                         should_maintain_schedule() ? schedule : nullptr),
+        graph_assembler_(graph_assembler),
         frame_state_zapper_(nullptr) {}
 
   void Run();
@@ -112,7 +117,6 @@ class EffectControlLinearizer {
   Node* LowerCheckedTaggedToFloat64(Node* node, Node* frame_state);
   Node* LowerCheckedTaggedToTaggedSigned(Node* node, Node* frame_state);
   Node* LowerCheckedTaggedToTaggedPointer(Node* node, Node* frame_state);
-  Node* LowerBigIntAsUintN(Node* node, Node* frame_state);
   Node* LowerChangeUint64ToBigInt(Node* node);
   Node* LowerTruncateBigIntToUint64(Node* node);
   Node* LowerChangeTaggedToFloat64(Node* node);
@@ -192,6 +196,7 @@ class EffectControlLinearizer {
   void LowerTransitionElementsKind(Node* node);
   Node* LowerLoadFieldByIndex(Node* node);
   Node* LowerLoadMessage(Node* node);
+  Node* AdaptFastCallArgument(Node* node, CTypeInfo::Type arg_type);
   Node* LowerFastApiCall(Node* node);
   Node* LowerLoadTypedElement(Node* node);
   Node* LowerLoadDataViewElement(Node* node);
@@ -246,8 +251,7 @@ class EffectControlLinearizer {
   Node* BuildTypedArrayDataPointer(Node* base, Node* external);
 
   template <typename... Args>
-  Node* CallBuiltin(Builtins::Name builtin, Operator::Properties properties,
-                    Args...);
+  Node* CallBuiltin(Builtin builtin, Operator::Properties properties, Args...);
 
   Node* ChangeBitToTagged(Node* value);
   Node* ChangeFloat64ToTagged(Node* value, CheckForMinusZeroMode mode);
@@ -307,7 +311,7 @@ class EffectControlLinearizer {
     return js_graph_->simplified();
   }
   MachineOperatorBuilder* machine() const { return js_graph_->machine(); }
-  JSGraphAssembler* gasm() { return &graph_assembler_; }
+  JSGraphAssembler* gasm() const { return graph_assembler_; }
   JSHeapBroker* broker() const { return broker_; }
 
   JSGraph* js_graph_;
@@ -319,7 +323,7 @@ class EffectControlLinearizer {
   SourcePositionTable* source_positions_;
   NodeOriginTable* node_origins_;
   JSHeapBroker* broker_;
-  JSGraphAssembler graph_assembler_;
+  JSGraphAssembler* graph_assembler_;
   Node* frame_state_zapper_;  // For tracking down compiler::Node::New crashes.
 };
 
@@ -1058,9 +1062,6 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
       break;
     case IrOpcode::kCheckedTaggedToTaggedPointer:
       result = LowerCheckedTaggedToTaggedPointer(node, frame_state);
-      break;
-    case IrOpcode::kBigIntAsUintN:
-      result = LowerBigIntAsUintN(node, frame_state);
       break;
     case IrOpcode::kChangeUint64ToBigInt:
       result = LowerChangeUint64ToBigInt(node);
@@ -2934,22 +2935,6 @@ Node* EffectControlLinearizer::LowerCheckBigInt(Node* node, Node* frame_state) {
   return value;
 }
 
-Node* EffectControlLinearizer::LowerBigIntAsUintN(Node* node,
-                                                  Node* frame_state) {
-  DCHECK(machine()->Is64());
-
-  const int bits = OpParameter<int>(node->op());
-  DCHECK(0 <= bits && bits <= 64);
-
-  if (bits == 64) {
-    // Reduce to nop.
-    return node->InputAt(0);
-  } else {
-    const uint64_t msk = (1ULL << bits) - 1ULL;
-    return __ Word64And(node->InputAt(0), __ Int64Constant(msk));
-  }
-}
-
 Node* EffectControlLinearizer::LowerChangeUint64ToBigInt(Node* node) {
   DCHECK(machine()->Is64());
 
@@ -3089,7 +3074,7 @@ Node* EffectControlLinearizer::LowerNumberToString(Node* node) {
   Node* argument = node->InputAt(0);
 
   Callable const callable =
-      Builtins::CallableFor(isolate(), Builtins::kNumberToString);
+      Builtins::CallableFor(isolate(), Builtin::kNumberToString);
   Operator::Properties properties = Operator::kEliminatable;
   CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
   auto call_descriptor = Linkage::GetStubCallDescriptor(
@@ -3585,7 +3570,7 @@ Node* EffectControlLinearizer::LowerObjectIsUndetectable(Node* node) {
 
 Node* EffectControlLinearizer::LowerTypeOf(Node* node) {
   Node* obj = node->InputAt(0);
-  Callable const callable = Builtins::CallableFor(isolate(), Builtins::kTypeof);
+  Callable const callable = Builtins::CallableFor(isolate(), Builtin::kTypeof);
   Operator::Properties const properties = Operator::kEliminatable;
   CallDescriptor::Flags const flags = CallDescriptor::kNoAllocate;
   auto call_descriptor = Linkage::GetStubCallDescriptor(
@@ -3666,7 +3651,7 @@ void EffectControlLinearizer::LowerUpdateInterruptBudget(Node* node) {
               &if_budget_exhausted, &next);
 
     __ Bind(&if_budget_exhausted);
-    CallBuiltin(Builtins::kBytecodeBudgetInterruptFromCode,
+    CallBuiltin(Builtin::kBytecodeBudgetInterruptFromCode,
                 node->op()->properties(), feedback_cell);
     __ Goto(&next);
 
@@ -3677,14 +3662,13 @@ void EffectControlLinearizer::LowerUpdateInterruptBudget(Node* node) {
 Node* EffectControlLinearizer::LowerToBoolean(Node* node) {
   Node* obj = node->InputAt(0);
   Callable const callable =
-      Builtins::CallableFor(isolate(), Builtins::kToBoolean);
+      Builtins::CallableFor(isolate(), Builtin::kToBoolean);
   Operator::Properties const properties = Operator::kEliminatable;
   CallDescriptor::Flags const flags = CallDescriptor::kNoAllocate;
   auto call_descriptor = Linkage::GetStubCallDescriptor(
       graph()->zone(), callable.descriptor(),
       callable.descriptor().GetStackParameterCount(), flags, properties);
-  return __ Call(call_descriptor, __ HeapConstant(callable.code()), obj,
-                 __ NoContextConstant());
+  return __ Call(call_descriptor, __ HeapConstant(callable.code()), obj);
 }
 
 Node* EffectControlLinearizer::LowerArgumentsLength(Node* node) {
@@ -3814,16 +3798,16 @@ Node* EffectControlLinearizer::LowerNewArgumentsElements(Node* node) {
   CallDescriptor::Flags const flags = CallDescriptor::kNoFlags;
   Node* frame = __ LoadFramePointer();
   Node* arguments_count = NodeProperties::GetValueInput(node, 0);
-  Builtins::Name builtin_name;
+  Builtin builtin_name;
   switch (type) {
     case CreateArgumentsType::kMappedArguments:
-      builtin_name = Builtins::kNewSloppyArgumentsElements;
+      builtin_name = Builtin::kNewSloppyArgumentsElements;
       break;
     case CreateArgumentsType::kUnmappedArguments:
-      builtin_name = Builtins::kNewStrictArgumentsElements;
+      builtin_name = Builtin::kNewStrictArgumentsElements;
       break;
     case CreateArgumentsType::kRestParameter:
-      builtin_name = Builtins::kNewRestArgumentsElements;
+      builtin_name = Builtin::kNewRestArgumentsElements;
       break;
   }
   Callable const callable = Builtins::CallableFor(isolate(), builtin_name);
@@ -3886,7 +3870,7 @@ Node* EffectControlLinearizer::LowerSameValue(Node* node) {
   Node* rhs = node->InputAt(1);
 
   Callable const callable =
-      Builtins::CallableFor(isolate(), Builtins::kSameValue);
+      Builtins::CallableFor(isolate(), Builtin::kSameValue);
   Operator::Properties properties = Operator::kEliminatable;
   CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
   auto call_descriptor = Linkage::GetStubCallDescriptor(
@@ -3901,7 +3885,7 @@ Node* EffectControlLinearizer::LowerSameValueNumbersOnly(Node* node) {
   Node* rhs = node->InputAt(1);
 
   Callable const callable =
-      Builtins::CallableFor(isolate(), Builtins::kSameValueNumbersOnly);
+      Builtins::CallableFor(isolate(), Builtin::kSameValueNumbersOnly);
   Operator::Properties properties = Operator::kEliminatable;
   CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
   auto call_descriptor = Linkage::GetStubCallDescriptor(
@@ -3953,7 +3937,7 @@ Node* EffectControlLinearizer::LowerStringToNumber(Node* node) {
   Node* string = node->InputAt(0);
 
   Callable const callable =
-      Builtins::CallableFor(isolate(), Builtins::kStringToNumber);
+      Builtins::CallableFor(isolate(), Builtin::kStringToNumber);
   Operator::Properties properties = Operator::kEliminatable;
   CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
   auto call_descriptor = Linkage::GetStubCallDescriptor(
@@ -4117,7 +4101,7 @@ Node* EffectControlLinearizer::LowerStringCodePointAt(Node* node) {
   Node* position = node->InputAt(1);
 
   Callable const callable =
-      Builtins::CallableFor(isolate(), Builtins::kStringCodePointAt);
+      Builtins::CallableFor(isolate(), Builtin::kStringCodePointAt);
   Operator::Properties properties = Operator::kNoThrow | Operator::kNoWrite;
   CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
   auto call_descriptor = Linkage::GetStubCallDescriptor(
@@ -4230,7 +4214,7 @@ Node* EffectControlLinearizer::LowerStringToLowerCaseIntl(Node* node) {
   Node* receiver = node->InputAt(0);
 
   Callable callable =
-      Builtins::CallableFor(isolate(), Builtins::kStringToLowerCaseIntl);
+      Builtins::CallableFor(isolate(), Builtin::kStringToLowerCaseIntl);
   Operator::Properties properties = Operator::kNoDeopt | Operator::kNoThrow;
   CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
   auto call_descriptor = Linkage::GetStubCallDescriptor(
@@ -4395,8 +4379,7 @@ Node* EffectControlLinearizer::LowerStringIndexOf(Node* node) {
   Node* search_string = node->InputAt(1);
   Node* position = node->InputAt(2);
 
-  Callable callable =
-      Builtins::CallableFor(isolate(), Builtins::kStringIndexOf);
+  Callable callable = Builtins::CallableFor(isolate(), Builtin::kStringIndexOf);
   Operator::Properties properties = Operator::kEliminatable;
   CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
   auto call_descriptor = Linkage::GetStubCallDescriptor(
@@ -4411,7 +4394,7 @@ Node* EffectControlLinearizer::LowerStringFromCodePointAt(Node* node) {
   Node* index = node->InputAt(1);
 
   Callable callable =
-      Builtins::CallableFor(isolate(), Builtins::kStringFromCodePointAt);
+      Builtins::CallableFor(isolate(), Builtin::kStringFromCodePointAt);
   Operator::Properties properties = Operator::kEliminatable;
   CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
   auto call_descriptor = Linkage::GetStubCallDescriptor(
@@ -4447,7 +4430,7 @@ Node* EffectControlLinearizer::LowerStringSubstring(Node* node) {
   Node* end = ChangeInt32ToIntPtr(node->InputAt(2));
 
   Callable callable =
-      Builtins::CallableFor(isolate(), Builtins::kStringSubstring);
+      Builtins::CallableFor(isolate(), Builtin::kStringSubstring);
   Operator::Properties properties = Operator::kEliminatable;
   CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
   auto call_descriptor = Linkage::GetStubCallDescriptor(
@@ -4459,17 +4442,17 @@ Node* EffectControlLinearizer::LowerStringSubstring(Node* node) {
 
 Node* EffectControlLinearizer::LowerStringEqual(Node* node) {
   return LowerStringComparison(
-      Builtins::CallableFor(isolate(), Builtins::kStringEqual), node);
+      Builtins::CallableFor(isolate(), Builtin::kStringEqual), node);
 }
 
 Node* EffectControlLinearizer::LowerStringLessThan(Node* node) {
   return LowerStringComparison(
-      Builtins::CallableFor(isolate(), Builtins::kStringLessThan), node);
+      Builtins::CallableFor(isolate(), Builtin::kStringLessThan), node);
 }
 
 Node* EffectControlLinearizer::LowerStringLessThanOrEqual(Node* node) {
   return LowerStringComparison(
-      Builtins::CallableFor(isolate(), Builtins::kStringLessThanOrEqual), node);
+      Builtins::CallableFor(isolate(), Builtin::kStringLessThanOrEqual), node);
 }
 
 Node* EffectControlLinearizer::LowerBigIntAdd(Node* node, Node* frame_state) {
@@ -4477,7 +4460,7 @@ Node* EffectControlLinearizer::LowerBigIntAdd(Node* node, Node* frame_state) {
   Node* rhs = node->InputAt(1);
 
   Callable const callable =
-      Builtins::CallableFor(isolate(), Builtins::kBigIntAddNoThrow);
+      Builtins::CallableFor(isolate(), Builtin::kBigIntAddNoThrow);
   auto call_descriptor = Linkage::GetStubCallDescriptor(
       graph()->zone(), callable.descriptor(),
       callable.descriptor().GetStackParameterCount(), CallDescriptor::kNoFlags,
@@ -4498,7 +4481,7 @@ Node* EffectControlLinearizer::LowerBigIntSubtract(Node* node,
   Node* rhs = node->InputAt(1);
 
   Callable const callable =
-      Builtins::CallableFor(isolate(), Builtins::kBigIntSubtractNoThrow);
+      Builtins::CallableFor(isolate(), Builtin::kBigIntSubtractNoThrow);
   auto call_descriptor = Linkage::GetStubCallDescriptor(
       graph()->zone(), callable.descriptor(),
       callable.descriptor().GetStackParameterCount(), CallDescriptor::kNoFlags,
@@ -4515,7 +4498,7 @@ Node* EffectControlLinearizer::LowerBigIntSubtract(Node* node,
 
 Node* EffectControlLinearizer::LowerBigIntNegate(Node* node) {
   Callable const callable =
-      Builtins::CallableFor(isolate(), Builtins::kBigIntUnaryMinus);
+      Builtins::CallableFor(isolate(), Builtin::kBigIntUnaryMinus);
   auto call_descriptor = Linkage::GetStubCallDescriptor(
       graph()->zone(), callable.descriptor(),
       callable.descriptor().GetStackParameterCount(), CallDescriptor::kNoFlags,
@@ -4864,7 +4847,7 @@ Node* EffectControlLinearizer::LowerEnsureWritableFastElements(Node* node) {
   // We need to take a copy of the {elements} and set them up for {object}.
   Operator::Properties properties = Operator::kEliminatable;
   Callable callable =
-      Builtins::CallableFor(isolate(), Builtins::kCopyFastSmiOrObjectElements);
+      Builtins::CallableFor(isolate(), Builtin::kCopyFastSmiOrObjectElements);
   CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
   auto call_descriptor = Linkage::GetStubCallDescriptor(
       graph()->zone(), callable.descriptor(),
@@ -4899,9 +4882,9 @@ Node* EffectControlLinearizer::LowerMaybeGrowFastElements(Node* node,
   Operator::Properties properties = Operator::kEliminatable;
   Callable callable =
       (params.mode() == GrowFastElementsMode::kDoubleElements)
-          ? Builtins::CallableFor(isolate(), Builtins::kGrowFastDoubleElements)
+          ? Builtins::CallableFor(isolate(), Builtin::kGrowFastDoubleElements)
           : Builtins::CallableFor(isolate(),
-                                  Builtins::kGrowFastSmiOrObjectElements);
+                                  Builtin::kGrowFastSmiOrObjectElements);
   CallDescriptor::Flags call_flags = CallDescriptor::kNoFlags;
   auto call_descriptor = Linkage::GetStubCallDescriptor(
       graph()->zone(), callable.descriptor(),
@@ -4974,7 +4957,8 @@ void EffectControlLinearizer::LowerStoreMessage(Node* node) {
   __ StoreField(AccessBuilder::ForExternalIntPtr(), offset, object_pattern);
 }
 
-static MachineType MachineTypeFor(CTypeInfo::Type type) {
+namespace {
+MachineType MachineTypeFor(CTypeInfo::Type type) {
   switch (type) {
     case CTypeInfo::Type::kVoid:
       return MachineType::AnyTagged();
@@ -4993,7 +4977,32 @@ static MachineType MachineTypeFor(CTypeInfo::Type type) {
     case CTypeInfo::Type::kFloat64:
       return MachineType::Float64();
     case CTypeInfo::Type::kV8Value:
+    case CTypeInfo::Type::kApiObject:
       return MachineType::AnyTagged();
+  }
+}
+}  // namespace
+
+Node* EffectControlLinearizer::AdaptFastCallArgument(Node* node,
+                                                     CTypeInfo::Type arg_type) {
+  switch (arg_type) {
+    case CTypeInfo::Type::kV8Value: {
+      int kAlign = alignof(uintptr_t);
+      int kSize = sizeof(uintptr_t);
+      Node* stack_slot = __ StackSlot(kSize, kAlign);
+
+      __ Store(StoreRepresentation(MachineType::PointerRepresentation(),
+                                   kNoWriteBarrier),
+               stack_slot, 0, node);
+
+      return stack_slot;
+    }
+    case CTypeInfo::Type::kFloat32: {
+      return __ TruncateFloat64ToFloat32(node);
+    }
+    default: {
+      return node;
+    }
   }
 }
 
@@ -5060,13 +5069,9 @@ Node* EffectControlLinearizer::LowerFastApiCall(Node* node) {
   inputs[0] = n.target();
   for (int i = FastApiCallNode::kFastTargetInputCount;
        i < c_arg_count + FastApiCallNode::kFastTargetInputCount; ++i) {
-    if (c_signature->ArgumentInfo(i - 1).GetType() ==
-        CTypeInfo::Type::kFloat32) {
-      inputs[i] =
-          __ TruncateFloat64ToFloat32(NodeProperties::GetValueInput(node, i));
-    } else {
-      inputs[i] = NodeProperties::GetValueInput(node, i);
-    }
+    inputs[i] =
+        AdaptFastCallArgument(NodeProperties::GetValueInput(node, i),
+                              c_signature->ArgumentInfo(i - 1).GetType());
   }
   if (c_signature->HasOptions()) {
     inputs[c_arg_count + 1] = stack_slot;
@@ -5113,6 +5118,7 @@ Node* EffectControlLinearizer::LowerFastApiCall(Node* node) {
           c_call_result, CheckForMinusZeroMode::kCheckForMinusZero);
       break;
     case CTypeInfo::Type::kV8Value:
+    case CTypeInfo::Type::kApiObject:
       UNREACHABLE();
   }
 
@@ -5844,7 +5850,7 @@ void EffectControlLinearizer::LowerRuntimeAbort(Node* node) {
 }
 
 template <typename... Args>
-Node* EffectControlLinearizer::CallBuiltin(Builtins::Name builtin,
+Node* EffectControlLinearizer::CallBuiltin(Builtin builtin,
                                            Operator::Properties properties,
                                            Args... args) {
   Callable const callable = Builtins::CallableFor(isolate(), builtin);
@@ -5859,12 +5865,11 @@ Node* EffectControlLinearizer::CallBuiltin(Builtins::Name builtin,
 Node* EffectControlLinearizer::LowerAssertType(Node* node) {
   DCHECK_EQ(node->opcode(), IrOpcode::kAssertType);
   Type type = OpParameter<Type>(node->op());
-  DCHECK(type.IsRange());
-  auto range = type.AsRange();
+  CHECK(type.CanBeAsserted());
   Node* const input = node->InputAt(0);
-  Node* const min = __ NumberConstant(range->Min());
-  Node* const max = __ NumberConstant(range->Max());
-  CallBuiltin(Builtins::kCheckNumberInRange, node->op()->properties(), input,
+  Node* const min = __ NumberConstant(type.Min());
+  Node* const max = __ NumberConstant(type.Max());
+  CallBuiltin(Builtin::kCheckNumberInRange, node->op()->properties(), input,
               min, max, __ SmiConstant(node->id()));
   return input;
 }
@@ -5873,7 +5878,7 @@ Node* EffectControlLinearizer::LowerFoldConstant(Node* node) {
   DCHECK_EQ(node->opcode(), IrOpcode::kFoldConstant);
   Node* original = node->InputAt(0);
   Node* constant = node->InputAt(1);
-  CallBuiltin(Builtins::kCheckSameObject, node->op()->properties(), original,
+  CallBuiltin(Builtin::kCheckSameObject, node->op()->properties(), original,
               constant);
   return constant;
 }
@@ -5905,7 +5910,7 @@ Node* EffectControlLinearizer::LowerConvertReceiver(Node* node) {
       // Wrap the primitive {value} into a JSPrimitiveWrapper.
       __ Bind(&convert_to_object);
       Operator::Properties properties = Operator::kEliminatable;
-      Callable callable = Builtins::CallableFor(isolate(), Builtins::kToObject);
+      Callable callable = Builtins::CallableFor(isolate(), Builtin::kToObject);
       CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
       auto call_descriptor = Linkage::GetStubCallDescriptor(
           graph()->zone(), callable.descriptor(),
@@ -5942,7 +5947,7 @@ Node* EffectControlLinearizer::LowerConvertReceiver(Node* node) {
       __ GotoIf(__ TaggedEqual(value, __ NullConstant()),
                 &convert_global_proxy);
       Operator::Properties properties = Operator::kEliminatable;
-      Callable callable = Builtins::CallableFor(isolate(), Builtins::kToObject);
+      Callable callable = Builtins::CallableFor(isolate(), Builtin::kToObject);
       CallDescriptor::Flags flags = CallDescriptor::kNoFlags;
       auto call_descriptor = Linkage::GetStubCallDescriptor(
           graph()->zone(), callable.descriptor(),
@@ -6303,7 +6308,7 @@ Node* EffectControlLinearizer::LowerFindOrderedHashMapEntry(Node* node) {
 
   {
     Callable const callable =
-        Builtins::CallableFor(isolate(), Builtins::kFindOrderedHashMapEntry);
+        Builtins::CallableFor(isolate(), Builtin::kFindOrderedHashMapEntry);
     Operator::Properties const properties = node->op()->properties();
     CallDescriptor::Flags const flags = CallDescriptor::kNoFlags;
     auto call_descriptor = Linkage::GetStubCallDescriptor(
@@ -6462,15 +6467,47 @@ Node* EffectControlLinearizer::BuildIsClearedWeakReference(Node* maybe_object) {
 
 #undef __
 
+namespace {
+
+MaskArrayIndexEnable MaskArrayForPoisonLevel(
+    PoisoningMitigationLevel poison_level) {
+  return (poison_level != PoisoningMitigationLevel::kDontPoison)
+             ? MaskArrayIndexEnable::kMaskArrayIndex
+             : MaskArrayIndexEnable::kDoNotMaskArrayIndex;
+}
+
+}  // namespace
+
 void LinearizeEffectControl(JSGraph* graph, Schedule* schedule, Zone* temp_zone,
                             SourcePositionTable* source_positions,
                             NodeOriginTable* node_origins,
-                            MaskArrayIndexEnable mask_array_index,
-                            MaintainSchedule maintain_schedule,
+                            PoisoningMitigationLevel poison_level,
                             JSHeapBroker* broker) {
-  EffectControlLinearizer linearizer(
-      graph, schedule, temp_zone, source_positions, node_origins,
-      mask_array_index, maintain_schedule, broker);
+  JSGraphAssembler graph_assembler_(graph, temp_zone, base::nullopt, nullptr);
+  EffectControlLinearizer linearizer(graph, schedule, &graph_assembler_,
+                                     temp_zone, source_positions, node_origins,
+                                     MaskArrayForPoisonLevel(poison_level),
+                                     MaintainSchedule::kDiscard, broker);
+  linearizer.Run();
+}
+
+void LowerToMachineSchedule(JSGraph* js_graph, Schedule* schedule,
+                            Zone* temp_zone,
+                            SourcePositionTable* source_positions,
+                            NodeOriginTable* node_origins,
+                            PoisoningMitigationLevel poison_level,
+                            JSHeapBroker* broker) {
+  JSGraphAssembler graph_assembler(js_graph, temp_zone, base::nullopt,
+                                   schedule);
+  EffectControlLinearizer linearizer(js_graph, schedule, &graph_assembler,
+                                     temp_zone, source_positions, node_origins,
+                                     MaskArrayForPoisonLevel(poison_level),
+                                     MaintainSchedule::kMaintain, broker);
+  MemoryLowering memory_lowering(js_graph, temp_zone, &graph_assembler,
+                                 poison_level);
+  SelectLowering select_lowering(&graph_assembler, js_graph->graph());
+  graph_assembler.AddInlineReducer(&memory_lowering);
+  graph_assembler.AddInlineReducer(&select_lowering);
   linearizer.Run();
 }
 

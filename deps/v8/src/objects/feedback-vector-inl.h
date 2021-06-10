@@ -41,9 +41,8 @@ INT32_ACCESSORS(FeedbackMetadata, create_closure_slot_count,
 RELEASE_ACQUIRE_WEAK_ACCESSORS(FeedbackVector, maybe_optimized_code,
                                kMaybeOptimizedCodeOffset)
 
-int32_t FeedbackMetadata::synchronized_slot_count() const {
-  return base::Acquire_Load(
-      reinterpret_cast<const base::Atomic32*>(field_address(kSlotCountOffset)));
+int32_t FeedbackMetadata::slot_count(AcquireLoadTag) const {
+  return ACQUIRE_READ_INT32_FIELD(*this, kSlotCountOffset);
 }
 
 int32_t FeedbackMetadata::get(int index) const {
@@ -182,14 +181,15 @@ bool FeedbackVector::IsOfLegacyType(MaybeObject value) {
 #endif  // DEBUG
 
 MaybeObject FeedbackVector::Get(FeedbackSlot slot) const {
-  MaybeObject value = raw_feedback_slots(GetIndex(slot));
+  MaybeObject value = raw_feedback_slots(GetIndex(slot), kRelaxedLoad);
   DCHECK(!IsOfLegacyType(value));
   return value;
 }
 
 MaybeObject FeedbackVector::Get(PtrComprCageBase cage_base,
                                 FeedbackSlot slot) const {
-  MaybeObject value = raw_feedback_slots(cage_base, GetIndex(slot));
+  MaybeObject value =
+      raw_feedback_slots(cage_base, GetIndex(slot), kRelaxedLoad);
   DCHECK(!IsOfLegacyType(value));
   return value;
 }
@@ -335,6 +335,10 @@ Handle<Symbol> FeedbackVector::MegamorphicSentinel(Isolate* isolate) {
   return isolate->factory()->megamorphic_symbol();
 }
 
+Handle<Symbol> FeedbackVector::MegaDOMSentinel(Isolate* isolate) {
+  return isolate->factory()->mega_dom_symbol();
+}
+
 Symbol FeedbackVector::RawUninitializedSentinel(Isolate* isolate) {
   return ReadOnlyRoots(isolate).uninitialized_symbol();
 }
@@ -375,6 +379,11 @@ MaybeObject FeedbackNexus::UninitializedSentinel() const {
 MaybeObject FeedbackNexus::MegamorphicSentinel() const {
   return MaybeObject::FromObject(
       *FeedbackVector::MegamorphicSentinel(GetIsolate()));
+}
+
+MaybeObject FeedbackNexus::MegaDOMSentinel() const {
+  return MaybeObject::FromObject(
+      *FeedbackVector::MegaDOMSentinel(GetIsolate()));
 }
 
 MaybeObject FeedbackNexus::FromHandle(MaybeObjectHandle slot) const {

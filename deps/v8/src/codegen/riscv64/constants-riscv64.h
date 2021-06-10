@@ -8,6 +8,7 @@
 #include "src/base/logging.h"
 #include "src/base/macros.h"
 #include "src/common/globals.h"
+#include "src/flags/flags.h"
 
 // UNIMPLEMENTED_ macro for RISCV.
 #ifdef DEBUG
@@ -55,8 +56,7 @@ const uint32_t kLessSignificantWordInDoublewordOffset = 4;
 namespace v8 {
 namespace internal {
 
-// TODO(sigurds): Change this value once we use relative jumps.
-constexpr size_t kMaxPCRelativeCodeRangeInMB = 0;
+constexpr size_t kMaxPCRelativeCodeRangeInMB = 4096;
 
 // -----------------------------------------------------------------------------
 // Registers and FPURegisters.
@@ -210,6 +210,7 @@ const int kRvcRs1sBits = 3;
 const int kRvcRs2sShift = 2;
 const int kRvcRs2sBits = 3;
 const int kRvcFunct2Shift = 5;
+const int kRvcFunct2BShift = 10;
 const int kRvcFunct2Bits = 2;
 const int kRvcFunct6Shift = 10;
 const int kRvcFunct6Bits = 6;
@@ -245,9 +246,11 @@ const int kRvcFunct3Mask = (((1 << kRvcFunct3Bits) - 1) << kRvcFunct3Shift);
 const int kRvcFunct4Mask = (((1 << kRvcFunct4Bits) - 1) << kRvcFunct4Shift);
 const int kRvcFunct6Mask = (((1 << kRvcFunct6Bits) - 1) << kRvcFunct6Shift);
 const int kRvcFunct2Mask = (((1 << kRvcFunct2Bits) - 1) << kRvcFunct2Shift);
+const int kRvcFunct2BMask = (((1 << kRvcFunct2Bits) - 1) << kRvcFunct2BShift);
 const int kCRTypeMask = kRvcOpcodeMask | kRvcFunct4Mask;
 const int kCSTypeMask = kRvcOpcodeMask | kRvcFunct6Mask;
 const int kCATypeMask = kRvcOpcodeMask | kRvcFunct6Mask | kRvcFunct2Mask;
+const int kRvcBImm8Mask = (((1 << 5) - 1) << 2) | (((1 << 3) - 1) << 10);
 
 // RISCV CSR related bit mask and shift
 const int kFcsrFlagsBits = 5;
@@ -727,18 +730,25 @@ class InstructionBase {
     kUnsupported = -1
   };
 
+  inline bool IsIllegalInstruction() const {
+    uint8_t FirstHalfWord = *reinterpret_cast<const uint16_t*>(this);
+    return FirstHalfWord == 0;
+  }
+
   inline bool IsShortInstruction() const {
     uint8_t FirstByte = *reinterpret_cast<const uint8_t*>(this);
     return (FirstByte & 0x03) <= C2;
   }
 
   inline uint8_t InstructionSize() const {
-    return this->IsShortInstruction() ? kShortInstrSize : kInstrSize;
+    return (FLAG_riscv_c_extension && this->IsShortInstruction())
+               ? kShortInstrSize
+               : kInstrSize;
   }
 
   // Get the raw instruction bits.
   inline Instr InstructionBits() const {
-    if (this->IsShortInstruction()) {
+    if (FLAG_riscv_c_extension && this->IsShortInstruction()) {
       return 0x0000FFFF & (*reinterpret_cast<const ShortInstr*>(this));
     }
     return *reinterpret_cast<const Instr*>(this);
@@ -908,6 +918,11 @@ class InstructionGetters : public T {
   inline int RvcFunct2Value() const {
     DCHECK(this->IsShortInstruction());
     return this->Bits(kRvcFunct2Shift + kRvcFunct2Bits - 1, kRvcFunct2Shift);
+  }
+
+  inline int RvcFunct2BValue() const {
+    DCHECK(this->IsShortInstruction());
+    return this->Bits(kRvcFunct2BShift + kRvcFunct2Bits - 1, kRvcFunct2BShift);
   }
 
   inline int CsrValue() const {
@@ -1118,6 +1133,17 @@ class InstructionGetters : public T {
     return imm12 << 20 >> 20;
   }
 
+  inline int RvcImm8BValue() const {
+    DCHECK(this->IsShortInstruction());
+    // | funct3 | imm[8|4:3] | rs1` | imm[7:6|2:1|5]  | opcode |
+    //  15       12        10       7                 2
+    uint32_t Bits = this->InstructionBits();
+    int32_t imm9 = ((Bits & 0x4) << 3) | ((Bits & 0x18) >> 2) |
+                   ((Bits & 0x60) << 1) | ((Bits & 0xc00) >> 7) |
+                   ((Bits & 0x1000) >> 4);
+    return imm9 << 23 >> 23;
+  }
+
   inline bool AqValue() const { return this->Bits(kAqShift, kAqShift); }
 
   inline bool RlValue() const { return this->Bits(kRlShift, kRlShift); }
@@ -1147,7 +1173,7 @@ class Instruction : public InstructionGetters<InstructionBase> {
 // C/C++ argument slots size.
 const int kCArgSlotCount = 0;
 
-// TODO(plind): below should be based on kPointerSize
+// TODO(plind): below should be based on kSystemPointerSize
 // TODO(plind): find all usages and remove the needless instructions for n64.
 const int kCArgsSlotsSize = kCArgSlotCount * kInstrSize * 2;
 

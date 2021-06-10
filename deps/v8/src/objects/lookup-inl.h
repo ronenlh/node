@@ -7,9 +7,12 @@
 
 #include "src/objects/lookup.h"
 
+// Include other inline headers *after* including lookup.h, such that e.g. the
+// definition of LookupIterator is available (and this comment prevents
+// clang-format from merging that include into the following ones).
 #include "src/handles/handles-inl.h"
 #include "src/heap/factory-inl.h"
-#include "src/logging/counters.h"
+#include "src/logging/runtime-call-stats-scope.h"
 #include "src/objects/api-callbacks.h"
 #include "src/objects/internal-index.h"
 #include "src/objects/map-inl.h"
@@ -169,7 +172,8 @@ Handle<Name> LookupIterator::GetName() {
 
 bool LookupIterator::IsElement(JSReceiver object) const {
   return index_ <= JSObject::kMaxElementIndex ||
-         (index_ != kInvalidIndex && object.map().has_typed_array_elements());
+         (index_ != kInvalidIndex &&
+          object.map().has_typed_array_or_rab_gsab_typed_array_elements());
 }
 
 bool LookupIterator::is_dictionary_holder() const {
@@ -209,7 +213,7 @@ bool LookupIterator::IsCacheableTransition() {
 // static
 void LookupIterator::UpdateProtector(Isolate* isolate, Handle<Object> receiver,
                                      Handle<Name> name) {
-  RuntimeCallTimerScope scope(isolate, RuntimeCallCounterId::kUpdateProtector);
+  RCS_SCOPE(isolate, RuntimeCallCounterId::kUpdateProtector);
 
   // This list must be kept in sync with
   // CodeStubAssembler::CheckForAssociatedProtector!

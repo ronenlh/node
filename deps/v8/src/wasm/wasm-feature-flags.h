@@ -24,6 +24,10 @@
   /* V8 side owner: jkummerow */                                               \
   V(gc, "garbage collection", false)                                           \
                                                                                \
+  /* Non-specified, V8-only experimental additions to the GC proposal */       \
+  /* V8 side owner: jkummerow */                                               \
+  V(gc_experiments, "garbage collection V8-only experimental features", false) \
+                                                                               \
   /* Typed function references proposal. */                                    \
   /* Official proposal: https://github.com/WebAssembly/function-references */  \
   /* V8 side owner: manoskouk */                                               \
@@ -37,7 +41,12 @@
   /* Relaxed SIMD proposal. */                                                 \
   /* https://github.com/WebAssembly/relaxed-simd */                            \
   /* V8 side owner: zhin */                                                    \
-  V(relaxed_simd, "relaxed simd", false)
+  V(relaxed_simd, "relaxed simd", false)                                       \
+                                                                               \
+  /* Branch Hinting proposal. */                                               \
+  /* https://github.com/WebAssembly/branch-hinting */                          \
+  /* V8 side owner: jkummerow */                                               \
+  V(branch_hinting, "branch hinting", false)
 
 // #############################################################################
 // Staged features (disabled by default, but enabled via --wasm-staging (also
@@ -76,13 +85,6 @@
 // Shipped features (enabled by default). Remove the feature flag once they hit
 // stable and are expected to stay enabled.
 #define FOREACH_WASM_SHIPPED_FEATURE_FLAG(V) /*          (force 80 columns) */ \
-  /* Multi-value proposal. */                                                  \
-  /* https://github.com/WebAssembly/multi-value */                             \
-  /* V8 side owner: thibaudm */                                                \
-  /* Shipped in v8.6. */                                                       \
-  /* ITS: https://groups.google.com/g/v8-users/c/pv2E4yFWeF0 */                \
-  V(mv, "multi-value support", true)                                           \
-                                                                               \
   /* Fixed-width SIMD operations. */                                           \
   /* https://github.com/webassembly/simd */                                    \
   /* V8 side owner: gdeepti, zhin */                                           \

@@ -126,8 +126,6 @@ inline BranchType InvertBranchType(BranchType type) {
   }
 }
 
-enum RememberedSetAction { EMIT_REMEMBERED_SET, OMIT_REMEMBERED_SET };
-enum SmiCheck { INLINE_SMI_CHECK, OMIT_SMI_CHECK };
 enum LinkRegisterStatus { kLRHasNotBeenSaved, kLRHasBeenSaved };
 enum DiscardMoveMode { kDontDiscardForSameWReg, kDiscardForSameWReg };
 
@@ -586,8 +584,8 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
 
   inline void Debug(const char* message, uint32_t code, Instr params = BREAK);
 
-  void Trap() override;
-  void DebugBreak() override;
+  void Trap();
+  void DebugBreak();
 
   // Print a message to stderr and abort execution.
   void Abort(AbortReason reason);
@@ -839,17 +837,20 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   template <StoreLRMode lr_mode = kDontStoreLR>
   void Push(const Register& src0, const VRegister& src1);
 
-  void SaveRegisters(RegList registers);
-  void RestoreRegisters(RegList registers);
+  void MaybeSaveRegisters(RegList registers);
+  void MaybeRestoreRegisters(RegList registers);
 
-  void CallRecordWriteStub(Register object, Operand offset,
-                           RememberedSetAction remembered_set_action,
-                           SaveFPRegsMode fp_mode);
-  void CallRecordWriteStub(Register object, Operand offset,
-                           RememberedSetAction remembered_set_action,
-                           SaveFPRegsMode fp_mode, Address wasm_target);
   void CallEphemeronKeyBarrier(Register object, Operand offset,
                                SaveFPRegsMode fp_mode);
+
+  void CallRecordWriteStubSaveRegisters(
+      Register object, Operand offset,
+      RememberedSetAction remembered_set_action, SaveFPRegsMode fp_mode,
+      StubCallMode mode = StubCallMode::kCallBuiltinPointer);
+  void CallRecordWriteStub(
+      Register object, Register slot_address,
+      RememberedSetAction remembered_set_action, SaveFPRegsMode fp_mode,
+      StubCallMode mode = StubCallMode::kCallBuiltinPointer);
 
   // For a given |object| and |offset|:
   //   - Move |object| to |dst_object|.
@@ -952,15 +953,14 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
             int shift_amount = 0);
   void Movi(const VRegister& vd, uint64_t hi, uint64_t lo);
 
-  void LoadFromConstantsTable(Register destination,
-                              int constant_index) override;
-  void LoadRootRegisterOffset(Register destination, intptr_t offset) override;
-  void LoadRootRelative(Register destination, int32_t offset) override;
+  void LoadFromConstantsTable(Register destination, int constant_index) final;
+  void LoadRootRegisterOffset(Register destination, intptr_t offset) final;
+  void LoadRootRelative(Register destination, int32_t offset) final;
 
   void Jump(Register target, Condition cond = al);
   void Jump(Address target, RelocInfo::Mode rmode, Condition cond = al);
   void Jump(Handle<Code> code, RelocInfo::Mode rmode, Condition cond = al);
-  void Jump(const ExternalReference& reference) override;
+  void Jump(const ExternalReference& reference);
 
   void Call(Register target);
   void Call(Address target, RelocInfo::Mode rmode);
@@ -973,32 +973,31 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   // Load the builtin given by the Smi in |builtin_index| into the same
   // register.
   void LoadEntryFromBuiltinIndex(Register builtin_index);
-  void LoadEntryFromBuiltinIndex(Builtins::Name builtin_index,
-                                 Register destination);
-  MemOperand EntryFromBuiltinIndexAsOperand(Builtins::Name builtin_index);
-  void CallBuiltinByIndex(Register builtin_index) override;
-  void CallBuiltin(Builtins::Name builtin) {
-    // TODO(11527): drop the int overload in favour of the Builtins::Name one.
+  void LoadEntryFromBuiltin(Builtin builtin_index, Register destination);
+  MemOperand EntryFromBuiltinAsOperand(Builtin builtin_index);
+  void CallBuiltinByIndex(Register builtin_index);
+  void CallBuiltin(Builtin builtin) {
+    // TODO(11527): drop the int overload in favour of the Builtin one.
     return CallBuiltin(static_cast<int>(builtin));
   }
   void CallBuiltin(int builtin_index);
-  void TailCallBuiltin(Builtins::Name builtin) {
-    // TODO(11527): drop the int overload in favour of the Builtins::Name one.
+  void TailCallBuiltin(Builtin builtin) {
+    // TODO(11527): drop the int overload in favour of the Builtin one.
     return TailCallBuiltin(static_cast<int>(builtin));
   }
   void TailCallBuiltin(int builtin_index);
 
-  void LoadCodeObjectEntry(Register destination, Register code_object) override;
-  void CallCodeObject(Register code_object) override;
+  void LoadCodeObjectEntry(Register destination, Register code_object);
+  void CallCodeObject(Register code_object);
   void JumpCodeObject(Register code_object,
-                      JumpMode jump_mode = JumpMode::kJump) override;
+                      JumpMode jump_mode = JumpMode::kJump);
 
   // Generates an instruction sequence s.t. the return address points to the
   // instruction following the call.
   // The return address on the stack is used by frame iteration.
   void StoreReturnAddressAndCall(Register target);
 
-  void CallForDeoptimization(Builtins::Name target, int deopt_id, Label* exit,
+  void CallForDeoptimization(Builtin target, int deopt_id, Label* exit,
                              DeoptimizeKind kind, Label* ret,
                              Label* jump_deoptimization_entry_label);
 
@@ -1278,7 +1277,7 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
 #undef DECLARE_FUNCTION
 
   // Load an object from the root table.
-  void LoadRoot(Register destination, RootIndex index) override;
+  void LoadRoot(Register destination, RootIndex index) final;
   void PushRoot(RootIndex index);
 
   inline void Ret(const Register& xn = lr);
@@ -1464,11 +1463,6 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
                                 byte* pc);
 
   void JumpHelper(int64_t offset, RelocInfo::Mode rmode, Condition cond = al);
-
-  void CallRecordWriteStub(Register object, Operand offset,
-                           RememberedSetAction remembered_set_action,
-                           SaveFPRegsMode fp_mode, int builtin_index,
-                           Address wasm_target);
 };
 
 class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
@@ -1849,17 +1843,17 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   // ---- Calling / Jumping helpers ----
 
   void CallRuntime(const Runtime::Function* f, int num_arguments,
-                   SaveFPRegsMode save_doubles = kDontSaveFPRegs);
+                   SaveFPRegsMode save_doubles = SaveFPRegsMode::kIgnore);
 
   // Convenience function: Same as above, but takes the fid instead.
   void CallRuntime(Runtime::FunctionId fid, int num_arguments,
-                   SaveFPRegsMode save_doubles = kDontSaveFPRegs) {
+                   SaveFPRegsMode save_doubles = SaveFPRegsMode::kIgnore) {
     CallRuntime(Runtime::FunctionForId(fid), num_arguments, save_doubles);
   }
 
   // Convenience function: Same as above, but takes the fid instead.
   void CallRuntime(Runtime::FunctionId fid,
-                   SaveFPRegsMode save_doubles = kDontSaveFPRegs) {
+                   SaveFPRegsMode save_doubles = SaveFPRegsMode::kIgnore) {
     const Runtime::Function* function = Runtime::FunctionForId(fid);
     CallRuntime(function, function->nargs, save_doubles);
   }
@@ -1882,7 +1876,7 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   // 'call_kind' must be x5.
   void InvokePrologue(Register expected_parameter_count,
                       Register actual_parameter_count, Label* done,
-                      InvokeFlag flag);
+                      InvokeType type);
 
   // On function call, call into the debugger.
   void CallDebugOnFunctionCall(Register fun, Register new_target,
@@ -1890,19 +1884,16 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
                                Register actual_parameter_count);
   void InvokeFunctionCode(Register function, Register new_target,
                           Register expected_parameter_count,
-                          Register actual_parameter_count, InvokeFlag flag);
+                          Register actual_parameter_count, InvokeType type);
   // Invoke the JavaScript function in the given register.
   // Changes the current context to the context in the function before invoking.
   void InvokeFunctionWithNewTarget(Register function, Register new_target,
                                    Register actual_parameter_count,
-                                   InvokeFlag flag);
+                                   InvokeType type);
   void InvokeFunction(Register function, Register expected_parameter_count,
-                      Register actual_parameter_count, InvokeFlag flag);
+                      Register actual_parameter_count, InvokeType type);
 
   // ---- Code generation helpers ----
-
-  // Frame restart support
-  void MaybeDropFrames();
 
   // ---------------------------------------------------------------------------
   // Support functions.
@@ -2012,9 +2003,17 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   // StatsCounter support
 
   void IncrementCounter(StatsCounter* counter, int value, Register scratch1,
-                        Register scratch2);
+                        Register scratch2) {
+    if (!FLAG_native_code_counters) return;
+    EmitIncrementCounter(counter, value, scratch1, scratch2);
+  }
+  void EmitIncrementCounter(StatsCounter* counter, int value, Register scratch1,
+                            Register scratch2);
   void DecrementCounter(StatsCounter* counter, int value, Register scratch1,
-                        Register scratch2);
+                        Register scratch2) {
+    if (!FLAG_native_code_counters) return;
+    EmitIncrementCounter(counter, -value, scratch1, scratch2);
+  }
 
   // ---------------------------------------------------------------------------
   // Stack limit utilities
@@ -2032,16 +2031,16 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   void RecordWriteField(
       Register object, int offset, Register value, LinkRegisterStatus lr_status,
       SaveFPRegsMode save_fp,
-      RememberedSetAction remembered_set_action = EMIT_REMEMBERED_SET,
-      SmiCheck smi_check = INLINE_SMI_CHECK);
+      RememberedSetAction remembered_set_action = RememberedSetAction::kEmit,
+      SmiCheck smi_check = SmiCheck::kInline);
 
   // For a given |object| notify the garbage collector that the slot at |offset|
   // has been written. |value| is the object being stored.
   void RecordWrite(
       Register object, Operand offset, Register value,
       LinkRegisterStatus lr_status, SaveFPRegsMode save_fp,
-      RememberedSetAction remembered_set_action = EMIT_REMEMBERED_SET,
-      SmiCheck smi_check = INLINE_SMI_CHECK);
+      RememberedSetAction remembered_set_action = RememberedSetAction::kEmit,
+      SmiCheck smi_check = SmiCheck::kInline);
 
   // ---------------------------------------------------------------------------
   // Debugging.

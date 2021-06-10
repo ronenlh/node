@@ -10,7 +10,7 @@
 #include "include/v8.h"
 #include "src/common/globals.h"
 #include "src/handles/handles.h"
-#include "src/logging/counters.h"
+#include "src/logging/runtime-call-stats-scope.h"
 #include "src/objects/objects-inl.h"
 #include "src/parsing/scanner.h"
 #include "src/strings/unicode-inl.h"
@@ -215,8 +215,7 @@ class ChunkedStream {
     const uint8_t* data = nullptr;
     size_t length;
     {
-      RuntimeCallTimerScope scope(stats,
-                                  RuntimeCallCounterId::kGetMoreDataCallback);
+      RCS_SCOPE(stats, RuntimeCallCounterId::kGetMoreDataCallback);
       length = source_->GetMoreData(&data);
     }
     ProcessChunk(data, position, length);
@@ -721,8 +720,7 @@ void Utf8ExternalStreamingStream::FillBufferFromCurrentChunk() {
 }
 
 bool Utf8ExternalStreamingStream::FetchChunk() {
-  RuntimeCallTimerScope scope(runtime_call_stats(),
-                              RuntimeCallCounterId::kGetMoreDataCallback);
+  RCS_SCOPE(runtime_call_stats(), RuntimeCallCounterId::kGetMoreDataCallback);
   DCHECK_EQ(current_.chunk_no, chunks_.size());
   DCHECK(chunks_.empty() || chunks_.back().length != 0);
 

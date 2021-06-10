@@ -6,11 +6,14 @@ import {Script, SourcePosition} from '../profile.mjs';
 
 import {State} from './app-model.mjs';
 import {ApiLogEntry} from './log/api.mjs';
-import {DeoptLogEntry} from './log/code.mjs';
 import {CodeLogEntry} from './log/code.mjs';
+import {DeoptLogEntry} from './log/code.mjs';
 import {IcLogEntry} from './log/ic.mjs';
+import {LogEntry} from './log/log.mjs';
 import {MapLogEntry} from './log/map.mjs';
+import {TickLogEntry} from './log/tick.mjs';
 import {Processor} from './processor.mjs';
+import {Timeline} from './timeline.mjs'
 import {FocusEvent, SelectionEvent, SelectRelatedEvent, SelectTimeEvent, ToolTipEvent,} from './view/events.mjs';
 import {$, CSSColor, groupBy} from './view/helper.mjs';
 
@@ -25,6 +28,7 @@ class App {
       logFileReader: $('#log-file-reader'),
 
       timelinePanel: $('#timeline-panel'),
+      tickTrack: $('#tick-track'),
       mapTrack: $('#map-track'),
       icTrack: $('#ic-track'),
       deoptTrack: $('#deopt-track'),
@@ -43,19 +47,18 @@ class App {
 
       toolTip: $('#tool-tip'),
     };
-    this.toggleSwitch = $('.theme-switch input[type="checkbox"]');
-    this.toggleSwitch.addEventListener('change', (e) => this.switchTheme(e));
     this._view.logFileReader.addEventListener(
         'fileuploadstart', (e) => this.handleFileUploadStart(e));
     this._view.logFileReader.addEventListener(
         'fileuploadend', (e) => this.handleFileUploadEnd(e));
     this._startupPromise = this.runAsyncInitialize();
+    this._view.codeTrack.svg = true;
   }
 
   static get allEventTypes() {
     return new Set([
       SourcePosition, MapLogEntry, IcLogEntry, ApiLogEntry, CodeLogEntry,
-      DeoptLogEntry
+      DeoptLogEntry, TickLogEntry
     ]);
   }
 
@@ -102,6 +105,8 @@ class App {
         break;
       case CodeLogEntry:
         break;
+      case TickLogEntry:
+        break;
       case DeoptLogEntry:
         // TODO select map + code entries
         if (entry.fileSourcePosition) entries.push(entry.fileSourcePosition);
@@ -110,13 +115,21 @@ class App {
         entries = entry.entries.concat(entry.sourcePositions);
         break;
       default:
-        throw new Error('Unknown selection type!');
+        throw new Error(`Unknown selection type: ${entry.constructor?.name}`);
     }
     if (entry.sourcePosition) {
       entries.push(entry.sourcePosition);
       // TODO: find the matching Code log entries.
     }
     this.selectEntries(entries);
+  }
+
+  static isClickable(object) {
+    if (typeof object !== 'object') return false;
+    if (object instanceof LogEntry) return true;
+    if (object instanceof SourcePosition) return true;
+    if (object instanceof Script) return true;
+    return false;
   }
 
   handleSelectEntries(e) {
@@ -134,7 +147,11 @@ class App {
   }
 
   selectEntriesOfSingleType(entries, type) {
-    switch (entries[0]?.constructor ?? type) {
+    const entryType = entries[0]?.constructor ?? type;
+    switch (entryType) {
+      case Script:
+        entries = entries.flatMap(script => script.sourcePositions);
+        return this.showSourcePositions(entries);
       case SourcePosition:
         return this.showSourcePositions(entries);
       case MapLogEntry:
@@ -147,37 +164,36 @@ class App {
         return this.showCodeEntries(entries);
       case DeoptLogEntry:
         return this.showDeoptEntries(entries);
+      case TickLogEntry:
+        break;
       default:
-        throw new Error('Unknown selection type!');
+        throw new Error(`Unknown selection type: ${entryType?.name}`);
     }
   }
 
   showMapEntries(entries) {
-    this._state.selectedMapLogEntries = entries;
     this._view.mapPanel.selectedLogEntries = entries;
     this._view.mapList.selectedLogEntries = entries;
   }
 
   showIcEntries(entries) {
-    this._state.selectedIcLogEntries = entries;
     this._view.icList.selectedLogEntries = entries;
   }
 
   showDeoptEntries(entries) {
-    this._state.selectedDeoptLogEntries = entries;
     this._view.deoptList.selectedLogEntries = entries;
   }
 
   showCodeEntries(entries) {
-    this._state.selectedCodeLogEntries = entries;
     this._view.codePanel.selectedEntries = entries;
     this._view.codeList.selectedLogEntries = entries;
   }
 
   showApiEntries(entries) {
-    this._state.selectedApiLogEntries = entries;
     this._view.apiList.selectedLogEntries = entries;
   }
+
+  showTickEntries(entries) {}
 
   showSourcePositions(entries) {
     this._view.scriptPanel.selectedSourcePositions = entries
@@ -195,6 +211,7 @@ class App {
     this.showDeoptEntries(this._state.deoptTimeline.selectionOrSelf);
     this.showCodeEntries(this._state.codeTimeline.selectionOrSelf);
     this.showApiEntries(this._state.apiTimeline.selectionOrSelf);
+    this.showTickEntries(this._state.tickTimeline.selectionOrSelf);
     this._view.timelinePanel.timeSelection = {start, end};
   }
 
@@ -205,6 +222,8 @@ class App {
 
   focusLogEntry(entry) {
     switch (entry.constructor) {
+      case Script:
+        return this.focusSourcePosition(entry.sourcePositions[0]);
       case SourcePosition:
         return this.focusSourcePosition(entry);
       case MapLogEntry:
@@ -217,8 +236,10 @@ class App {
         return this.focusCodeLogEntry(entry);
       case DeoptLogEntry:
         return this.focusDeoptLogEntry(entry);
+      case TickLogEntry:
+        return this.focusTickLogEntry(entry);
       default:
-        throw new Error('Unknown selection type!');
+        throw new Error(`Unknown selection type: ${entry.constructor?.name}`);
     }
   }
 
@@ -226,6 +247,7 @@ class App {
     this._state.map = entry;
     this._view.mapTrack.focusedEntry = entry;
     this._view.mapPanel.map = entry;
+    this._view.mapPanel.show();
   }
 
   focusIcLogEntry(entry) {
@@ -235,10 +257,11 @@ class App {
   focusCodeLogEntry(entry) {
     this._state.code = entry;
     this._view.codePanel.entry = entry;
+    this._view.codePanel.show();
   }
 
   focusDeoptLogEntry(entry) {
-    this._view.deoptList.focusedLogEntry = entry;
+    this._state.deoptLogEntry = entry;
   }
 
   focusApiLogEntry(entry) {
@@ -246,14 +269,42 @@ class App {
     this._view.apiTrack.focusedEntry = entry;
   }
 
+  focusTickLogEntry(entry) {
+    this._state.tickLogEntry = entry;
+    this._view.tickTrack.focusedEntry = entry;
+  }
+
   focusSourcePosition(sourcePosition) {
     if (!sourcePosition) return;
     this._view.scriptPanel.focusedSourcePositions = [sourcePosition];
+    this._view.scriptPanel.show();
   }
 
   handleToolTip(event) {
-    this._view.toolTip.positionOrTargetNode = event.positionOrTargetNode;
-    this._view.toolTip.content = event.content;
+    let content = event.content;
+    switch (content.constructor) {
+      case String:
+        break;
+      case Script:
+      case SourcePosition:
+      case MapLogEntry:
+      case IcLogEntry:
+      case ApiLogEntry:
+      case CodeLogEntry:
+      case DeoptLogEntry:
+      case TickLogEntry:
+        content = content.toolTipDict;
+        break;
+      default:
+        throw new Error(
+            `Unknown tooltip content type: ${entry.constructor?.name}`);
+    }
+    this.setToolTip(content, event.positionOrTargetNode);
+  }
+
+  setToolTip(content, positionOrTargetNode) {
+    this._view.toolTip.positionOrTargetNode = positionOrTargetNode;
+    this._view.toolTip.content = content;
   }
 
   handleFileUploadStart(e) {
@@ -276,8 +327,10 @@ class App {
       const deoptTimeline = processor.deoptTimeline;
       const codeTimeline = processor.codeTimeline;
       const apiTimeline = processor.apiTimeline;
+      const tickTimeline = processor.tickTimeline;
       this._state.setTimelines(
-          mapTimeline, icTimeline, deoptTimeline, codeTimeline, apiTimeline);
+          mapTimeline, icTimeline, deoptTimeline, codeTimeline, apiTimeline,
+          tickTimeline);
       this._view.mapPanel.timeline = mapTimeline;
       this._view.icList.timeline = icTimeline;
       this._view.mapList.timeline = mapTimeline;
@@ -302,14 +355,7 @@ class App {
     this._view.deoptTrack.data = this._state.deoptTimeline;
     this._view.codeTrack.data = this._state.codeTimeline;
     this._view.apiTrack.data = this._state.apiTimeline;
-  }
-
-  switchTheme(event) {
-    document.documentElement.dataset.theme =
-        event.target.checked ? 'light' : 'dark';
-    CSSColor.reset();
-    if (!this.fileLoaded) return;
-    this.refreshTimelineTrackView();
+    this._view.tickTrack.data = this._state.tickTimeline;
   }
 }
 

@@ -16,6 +16,7 @@
 #include "src/execution/isolate.h"
 #include "src/handles/handles.h"
 #include "src/objects/debug-objects.h"
+#include "src/objects/shared-function-info.h"
 
 namespace v8 {
 namespace internal {
@@ -28,14 +29,14 @@ class JavaScriptFrame;
 class JSGeneratorObject;
 class StackFrame;
 
-// Step actions. NOTE: These values are in macros.py as well.
+// Step actions.
 enum StepAction : int8_t {
   StepNone = -1,  // Stepping not prepared.
   StepOut = 0,    // Step out of the current function.
-  StepNext = 1,   // Step to the next statement in the current function.
-  StepIn = 2,     // Step into new functions invoked or the next statement
+  StepOver = 1,   // Step to the next statement in the current function.
+  StepInto = 2,   // Step into new functions invoked or the next statement
                   // in the current function.
-  LastStepAction = StepIn
+  LastStepAction = StepInto
 };
 
 // Type of exception break. NOTE: These values are in macros.py as well.
@@ -83,6 +84,7 @@ class BreakLocation {
 
   bool HasBreakPoint(Isolate* isolate, Handle<DebugInfo> debug_info) const;
 
+  inline int generator_suspend_id() { return generator_suspend_id_; }
   inline int position() const { return position_; }
 
   debug::BreakLocationType type() const;
@@ -92,12 +94,14 @@ class BreakLocation {
 
  private:
   BreakLocation(Handle<AbstractCode> abstract_code, DebugBreakType type,
-                int code_offset, int position, int generator_obj_reg_index)
+                int code_offset, int position, int generator_obj_reg_index,
+                int generator_suspend_id)
       : abstract_code_(abstract_code),
         code_offset_(code_offset),
         type_(type),
         position_(position),
-        generator_obj_reg_index_(generator_obj_reg_index) {
+        generator_obj_reg_index_(generator_obj_reg_index),
+        generator_suspend_id_(generator_suspend_id) {
     DCHECK_NE(NOT_DEBUG_BREAK, type_);
   }
 
@@ -105,7 +109,8 @@ class BreakLocation {
       : code_offset_(0),
         type_(type),
         position_(position),
-        generator_obj_reg_index_(0) {}
+        generator_obj_reg_index_(0),
+        generator_suspend_id_(-1) {}
 
   static int BreakIndexFromCodeOffset(Handle<DebugInfo> debug_info,
                                       Handle<AbstractCode> abstract_code,
@@ -119,6 +124,7 @@ class BreakLocation {
   DebugBreakType type_;
   int position_;
   int generator_obj_reg_index_;
+  int generator_suspend_id_;
 
   friend class BreakIterator;
 };
@@ -311,9 +317,6 @@ class V8_EXPORT_PRIVATE Debug {
   // Check whether this frame is just about to return.
   bool IsBreakAtReturn(JavaScriptFrame* frame);
 
-  // Support for LiveEdit
-  void ScheduleFrameRestart(StackFrame* frame);
-
   bool AllFramesOnStackAreBlackboxed();
 
   // Set new script source, throw an exception if error occurred. When preview
@@ -378,13 +381,6 @@ class V8_EXPORT_PRIVATE Debug {
 
   Address suspended_generator_address() {
     return reinterpret_cast<Address>(&thread_local_.suspended_generator_);
-  }
-
-  Address restart_fp_address() {
-    return reinterpret_cast<Address>(&thread_local_.restart_fp_);
-  }
-  bool will_restart() const {
-    return thread_local_.restart_fp_ != kNullAddress;
   }
 
   StepAction last_step_action() { return thread_local_.last_step_action_; }
@@ -548,9 +544,6 @@ class V8_EXPORT_PRIVATE Debug {
     // The suspended generator object to track when stepping.
     Object suspended_generator_;
 
-    // The new frame pointer to drop to when restarting a frame.
-    Address restart_fp_;
-
     // Last used inspector breakpoint id.
     int last_breakpoint_id_;
 
@@ -667,25 +660,6 @@ class SuppressDebug {
  private:
   Debug* debug_;
   bool old_state_;
-};
-
-// Code generator routines.
-class DebugCodegen : public AllStatic {
- public:
-  enum DebugBreakCallHelperMode {
-    SAVE_RESULT_REGISTER,
-    IGNORE_RESULT_REGISTER
-  };
-
-  // Builtin to drop frames to restart function.
-  static void GenerateFrameDropperTrampoline(MacroAssembler* masm);
-
-  // Builtin to atomically (wrt deopts) handle debugger statement and
-  // drop frames to restart function if necessary.
-  static void GenerateHandleDebuggerStatement(MacroAssembler* masm);
-
-  // Builtin to trigger a debug break before entering the function.
-  static void GenerateDebugBreakTrampoline(MacroAssembler* masm);
 };
 
 }  // namespace internal

@@ -34,7 +34,20 @@ static constexpr T FirstFromVarArgs(T x, ...) noexcept {
 
 // Convenience macro to avoid generating named accessors for all builtins.
 #define BUILTIN_CODE(isolate, name) \
-  (isolate)->builtins()->builtin_handle(Builtins::k##name)
+  (isolate)->builtins()->builtin_handle(Builtin::k##name)
+
+enum Builtin : int32_t {
+  kNoBuiltinId = -1,
+#define DEF_ENUM(Name, ...) k##Name,
+  BUILTIN_LIST(DEF_ENUM, DEF_ENUM, DEF_ENUM, DEF_ENUM, DEF_ENUM, DEF_ENUM,
+               DEF_ENUM)
+#undef DEF_ENUM
+#define EXTRACT_NAME(Name, ...) k##Name,
+  // Define kFirstBytecodeHandler,
+  kFirstBytecodeHandler =
+      FirstFromVarArgs(BUILTIN_LIST_BYTECODE_HANDLERS(EXTRACT_NAME) 0)
+#undef EXTRACT_NAME
+};
 
 class Builtins {
  public:
@@ -48,40 +61,74 @@ class Builtins {
   // Disassembler support.
   const char* Lookup(Address pc);
 
-  enum Name : int32_t {
-    kNoBuiltinId = -1,
-#define DEF_ENUM(Name, ...) k##Name,
-    BUILTIN_LIST(DEF_ENUM, DEF_ENUM, DEF_ENUM, DEF_ENUM, DEF_ENUM, DEF_ENUM,
-                 DEF_ENUM)
-#undef DEF_ENUM
-        builtin_count,
-
-#define EXTRACT_NAME(Name, ...) k##Name,
-    // Define kFirstBytecodeHandler,
-    kFirstBytecodeHandler =
-        FirstFromVarArgs(BUILTIN_LIST_BYTECODE_HANDLERS(EXTRACT_NAME) 0)
-#undef EXTRACT_NAME
-  };
+#define ADD_ONE(Name, ...) +1
+  static constexpr int kBuiltinCount = 0 BUILTIN_LIST(
+      ADD_ONE, ADD_ONE, ADD_ONE, ADD_ONE, ADD_ONE, ADD_ONE, ADD_ONE);
+#undef ADD_ONE
 
   static constexpr int kFirstWideBytecodeHandler =
-      kFirstBytecodeHandler + kNumberOfBytecodeHandlers;
+      Builtin::kFirstBytecodeHandler + kNumberOfBytecodeHandlers;
   static constexpr int kFirstExtraWideBytecodeHandler =
       kFirstWideBytecodeHandler + kNumberOfWideBytecodeHandlers;
   static constexpr int kLastBytecodeHandlerPlusOne =
       kFirstExtraWideBytecodeHandler + kNumberOfWideBytecodeHandlers;
-  STATIC_ASSERT(kLastBytecodeHandlerPlusOne == builtin_count);
+  STATIC_ASSERT(kLastBytecodeHandlerPlusOne == kBuiltinCount);
 
   static constexpr bool IsBuiltinId(int maybe_id) {
     STATIC_ASSERT(kNoBuiltinId == -1);
     return static_cast<uint32_t>(maybe_id) <
-           static_cast<uint32_t>(builtin_count);
+           static_cast<uint32_t>(kBuiltinCount);
   }
 
   // The different builtin kinds are documented in builtins-definitions.h.
   enum Kind { CPP, TFJ, TFC, TFS, TFH, BCH, ASM };
 
-  static BytecodeOffset GetContinuationBytecodeOffset(Name name);
-  static Name GetBuiltinFromBytecodeOffset(BytecodeOffset);
+  static BytecodeOffset GetContinuationBytecodeOffset(Builtin builtin);
+  static Builtin GetBuiltinFromBytecodeOffset(BytecodeOffset);
+
+  static constexpr Builtin GetRecordWriteStub(
+      RememberedSetAction remembered_set_action, SaveFPRegsMode fp_mode) {
+    switch (remembered_set_action) {
+      case RememberedSetAction::kEmit:
+        switch (fp_mode) {
+          case SaveFPRegsMode::kIgnore:
+            return Builtin::kRecordWriteEmitRememberedSetIgnoreFP;
+          case SaveFPRegsMode::kSave:
+            return Builtin::kRecordWriteEmitRememberedSetSaveFP;
+        }
+      case RememberedSetAction::kOmit:
+        switch (fp_mode) {
+          case SaveFPRegsMode::kIgnore:
+            return Builtin::kRecordWriteOmitRememberedSetIgnoreFP;
+          case SaveFPRegsMode::kSave:
+            return Builtin::kRecordWriteOmitRememberedSetSaveFP;
+        }
+    }
+  }
+
+  static constexpr Builtin GetEphemeronKeyBarrierStub(SaveFPRegsMode fp_mode) {
+    switch (fp_mode) {
+      case SaveFPRegsMode::kIgnore:
+        return Builtin::kEphemeronKeyBarrierIgnoreFP;
+      case SaveFPRegsMode::kSave:
+        return Builtin::kEphemeronKeyBarrierSaveFP;
+    }
+  }
+
+#ifdef V8_IS_TSAN
+  static Builtin GetTSANRelaxedStoreStub(SaveFPRegsMode fp_mode, int size) {
+    if (size == kInt32Size) {
+      return fp_mode == SaveFPRegsMode::kIgnore
+                 ? Builtin::kTSANRelaxedStore32IgnoreFP
+                 : Builtin::kTSANRelaxedStore32SaveFP;
+    } else {
+      CHECK_EQ(size, kInt64Size);
+      return fp_mode == SaveFPRegsMode::kIgnore
+                 ? Builtin::kTSANRelaxedStore64IgnoreFP
+                 : Builtin::kTSANRelaxedStore64SaveFP;
+    }
+  }
+#endif  // V8_IS_TSAN
 
   // Convenience wrappers.
   Handle<Code> CallFunction(ConvertReceiverMode = ConvertReceiverMode::kAny);
@@ -97,11 +144,12 @@ class Builtins {
   V8_EXPORT_PRIVATE Code builtin(int index);
   V8_EXPORT_PRIVATE Handle<Code> builtin_handle(int index);
 
-  static CallInterfaceDescriptor CallInterfaceDescriptorFor(Name name);
-  V8_EXPORT_PRIVATE static Callable CallableFor(Isolate* isolate, Name name);
+  static CallInterfaceDescriptor CallInterfaceDescriptorFor(Builtin builtin);
+  V8_EXPORT_PRIVATE static Callable CallableFor(Isolate* isolate,
+                                                Builtin builtin);
   static bool HasJSLinkage(int index);
 
-  static int GetStackParameterCount(Name name);
+  static int GetStackParameterCount(Builtin builtin);
 
   static const char* name(int index);
 
@@ -114,6 +162,7 @@ class Builtins {
   static Address CppEntryOf(int index);
 
   static Kind KindOf(int index);
+  static Kind KindOf(Builtin builtin);
   static const char* KindNameOf(int index);
 
   static bool IsCpp(int index);
@@ -256,7 +305,7 @@ class Builtins {
   friend class SetupIsolateDelegate;
 };
 
-Builtins::Name ExampleBuiltinForTorqueFunctionPointerType(
+Builtin ExampleBuiltinForTorqueFunctionPointerType(
     size_t function_pointer_type_id);
 
 }  // namespace internal

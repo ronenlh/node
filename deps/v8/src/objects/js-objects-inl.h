@@ -55,6 +55,11 @@ DEF_GETTER(JSObject, elements, FixedArrayBase) {
   return TaggedField<FixedArrayBase, kElementsOffset>::load(cage_base, *this);
 }
 
+FixedArrayBase JSObject::elements(RelaxedLoadTag tag) const {
+  PtrComprCageBase cage_base = GetPtrComprCageBase(*this);
+  return elements(cage_base, tag);
+}
+
 FixedArrayBase JSObject::elements(PtrComprCageBase cage_base,
                                   RelaxedLoadTag) const {
   return TaggedField<FixedArrayBase, kElementsOffset>::Relaxed_Load(cage_base,
@@ -337,6 +342,12 @@ Object JSObject::RawFastPropertyAt(PtrComprCageBase cage_base,
   }
 }
 
+Object JSObject::RawFastPropertyAt(FieldIndex index, RelaxedLoadTag tag) const {
+  PtrComprCageBase cage_base = GetPtrComprCageBase(*this);
+  CHECK(index.is_inobject());
+  return TaggedField<Object>::Relaxed_Load(cage_base, *this, index.offset());
+}
+
 void JSObject::RawFastInobjectPropertyAtPut(FieldIndex index, Object value,
                                             WriteBarrierMode mode) {
   DCHECK(index.is_inobject());
@@ -401,25 +412,31 @@ Object JSObject::InObjectPropertyAtPut(int index, Object value,
 }
 
 void JSObject::InitializeBody(Map map, int start_offset,
-                              Object pre_allocated_value, Object filler_value) {
-  DCHECK_IMPLIES(filler_value.IsHeapObject(),
-                 !ObjectInYoungGeneration(filler_value));
-  DCHECK_IMPLIES(pre_allocated_value.IsHeapObject(),
-                 !ObjectInYoungGeneration(pre_allocated_value));
+                              bool is_slack_tracking_in_progress,
+                              MapWord filler_map, Object undefined_filler) {
   int size = map.instance_size();
   int offset = start_offset;
-  if (filler_value != pre_allocated_value) {
+  if (is_slack_tracking_in_progress) {
     int end_of_pre_allocated_offset =
         size - (map.UnusedPropertyFields() * kTaggedSize);
     DCHECK_LE(kHeaderSize, end_of_pre_allocated_offset);
+    // fill start with references to the undefined value object
     while (offset < end_of_pre_allocated_offset) {
-      WRITE_FIELD(*this, offset, pre_allocated_value);
+      WRITE_FIELD(*this, offset, undefined_filler);
       offset += kTaggedSize;
     }
-  }
-  while (offset < size) {
-    WRITE_FIELD(*this, offset, filler_value);
-    offset += kTaggedSize;
+    // fill the remainder with one word filler objects (ie just a map word)
+    while (offset < size) {
+      Object fm = Object(filler_map.ptr());
+      WRITE_FIELD(*this, offset, fm);
+      offset += kTaggedSize;
+    }
+  } else {
+    while (offset < size) {
+      // fill with references to the undefined value object
+      WRITE_FIELD(*this, offset, undefined_filler);
+      offset += kTaggedSize;
+    }
   }
 }
 
@@ -769,7 +786,6 @@ static inline bool ShouldConvertToSlowElements(JSObject object,
   if (index - capacity >= JSObject::kMaxGap) return true;
   *new_capacity = JSObject::NewElementsCapacity(index + 1);
   DCHECK_LT(index, *new_capacity);
-  // TODO(ulan): Check if it works with young large objects.
   if (*new_capacity <= JSObject::kMaxUncheckedOldFastElementsLength ||
       (*new_capacity <= JSObject::kMaxUncheckedFastElementsLength &&
        ObjectInYoungGeneration(object))) {

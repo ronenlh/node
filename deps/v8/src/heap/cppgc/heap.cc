@@ -62,11 +62,11 @@ class Unmarker final : private HeapVisitor<Unmarker> {
   friend class HeapVisitor<Unmarker>;
 
  public:
-  explicit Unmarker(RawHeap* heap) { Traverse(heap); }
+  explicit Unmarker(RawHeap& heap) { Traverse(heap); }
 
  private:
-  bool VisitHeapObjectHeader(HeapObjectHeader* header) {
-    if (header->IsMarked()) header->Unmark();
+  bool VisitHeapObjectHeader(HeapObjectHeader& header) {
+    if (header.IsMarked()) header.Unmark();
     return true;
   }
 };
@@ -87,8 +87,7 @@ void CheckConfig(Heap::Config config, Heap::MarkingType marking_support,
 
 Heap::Heap(std::shared_ptr<cppgc::Platform> platform,
            cppgc::Heap::HeapOptions options)
-    : HeapBase(platform, options.custom_spaces, options.stack_support,
-               nullptr /* metric_recorder */),
+    : HeapBase(platform, options.custom_spaces, options.stack_support),
       gc_invoker_(this, platform_.get(), options.stack_support),
       growing_(&gc_invoker_, stats_collector_.get(),
                options.resource_constraints, options.marking_support,
@@ -158,7 +157,7 @@ void Heap::StartGarbageCollection(Config config) {
 
 #if defined(CPPGC_YOUNG_GENERATION)
   if (config.collection_type == Config::CollectionType::kMajor)
-    Unmarker unmarker(&raw_heap());
+    Unmarker unmarker(raw_heap());
 #endif
 
   const Marker::MarkingConfig marking_config{
@@ -176,6 +175,7 @@ void Heap::FinalizeGarbageCollection(Config::StackState stack_state) {
   if (override_stack_state_) {
     config_.stack_state = *override_stack_state_;
   }
+  SetStackEndOfCurrentGC(v8::base::Stack::GetCurrentStackPosition());
   in_atomic_pause_ = true;
   {
     // This guards atomic pause marking, meaning that no internal method or
@@ -188,7 +188,8 @@ void Heap::FinalizeGarbageCollection(Config::StackState stack_state) {
   // TODO(chromium:1056170): replace build flag with dedicated flag.
 #if DEBUG
   MarkingVerifier verifier(*this);
-  verifier.Run(config_.stack_state);
+  verifier.Run(config_.stack_state, stack_end_of_current_gc(),
+               stats_collector()->marked_bytes());
 #endif
 
   subtle::NoGarbageCollectionScope no_gc(*this);

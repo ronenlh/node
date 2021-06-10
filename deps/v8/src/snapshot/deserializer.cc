@@ -357,7 +357,7 @@ void Deserializer::PostProcessNewObject(Handle<Map> map, Handle<HeapObject> obj,
       Handle<String> result =
           isolate()->string_table()->LookupKey(isolate(), &key);
 
-      if (FLAG_thin_strings && *result != *string) {
+      if (*result != *string) {
         string->MakeThin(isolate(), *result);
         // Mutate the given object handle so that the backreference entry is
         // also updated.
@@ -464,6 +464,9 @@ void Deserializer::PostProcessNewObject(Handle<Map> map, Handle<HeapObject> obj,
     DCHECK(InstanceTypeChecker::IsStrongDescriptorArray(instance_type));
     Handle<DescriptorArray> descriptors = Handle<DescriptorArray>::cast(obj);
     new_descriptor_arrays_.push_back(descriptors);
+  } else if (InstanceTypeChecker::IsNativeContext(instance_type)) {
+    Handle<NativeContext> context = Handle<NativeContext>::cast(obj);
+    context->AllocateExternalPointerEntries(isolate());
   }
 
   // Check alignment.

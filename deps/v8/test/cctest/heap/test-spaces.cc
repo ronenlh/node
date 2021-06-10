@@ -53,15 +53,16 @@ namespace heap {
 class V8_NODISCARD TestMemoryAllocatorScope {
  public:
   TestMemoryAllocatorScope(Isolate* isolate, size_t max_capacity,
-                           size_t code_range_size,
                            PageAllocator* page_allocator = nullptr)
       : isolate_(isolate),
         old_allocator_(std::move(isolate->heap()->memory_allocator_)) {
     // Save the code pages for restoring them later on because the constructor
     // of MemoryAllocator will change them.
     isolate->GetCodePages()->swap(code_pages_);
-    isolate->heap()->memory_allocator_.reset(
-        new MemoryAllocator(isolate, max_capacity, code_range_size));
+    isolate->heap()->memory_allocator_.reset(new MemoryAllocator(
+        isolate,
+        page_allocator != nullptr ? page_allocator : isolate->page_allocator(),
+        max_capacity));
     if (page_allocator != nullptr) {
       isolate->heap()->memory_allocator_->data_page_allocator_ = page_allocator;
     }
@@ -113,8 +114,7 @@ static void VerifyMemoryChunk(Isolate* isolate, Heap* heap,
                               v8::PageAllocator* code_page_allocator,
                               size_t reserve_area_size, size_t commit_area_size,
                               Executability executable, Space* space) {
-  TestMemoryAllocatorScope test_allocator_scope(isolate, heap->MaxReserved(),
-                                                0);
+  TestMemoryAllocatorScope test_allocator_scope(isolate, heap->MaxReserved());
   MemoryAllocator* memory_allocator = test_allocator_scope.allocator();
   TestCodePageAllocatorScope test_code_page_allocator_scope(
       isolate, code_page_allocator);
@@ -190,8 +190,7 @@ TEST(MemoryAllocator) {
   Isolate* isolate = CcTest::i_isolate();
   Heap* heap = isolate->heap();
 
-  TestMemoryAllocatorScope test_allocator_scope(isolate, heap->MaxReserved(),
-                                                0);
+  TestMemoryAllocatorScope test_allocator_scope(isolate, heap->MaxReserved());
   MemoryAllocator* memory_allocator = test_allocator_scope.allocator();
 
   int total_pages = 0;
@@ -269,10 +268,10 @@ TEST(ComputeDiscardMemoryAreas) {
 }
 
 TEST(NewSpace) {
+  if (FLAG_single_generation) return;
   Isolate* isolate = CcTest::i_isolate();
   Heap* heap = isolate->heap();
-  TestMemoryAllocatorScope test_allocator_scope(isolate, heap->MaxReserved(),
-                                                0);
+  TestMemoryAllocatorScope test_allocator_scope(isolate, heap->MaxReserved());
   MemoryAllocator* memory_allocator = test_allocator_scope.allocator();
 
   NewSpace new_space(heap, memory_allocator->data_page_allocator(),
@@ -295,8 +294,7 @@ TEST(NewSpace) {
 TEST(OldSpace) {
   Isolate* isolate = CcTest::i_isolate();
   Heap* heap = isolate->heap();
-  TestMemoryAllocatorScope test_allocator_scope(isolate, heap->MaxReserved(),
-                                                0);
+  TestMemoryAllocatorScope test_allocator_scope(isolate, heap->MaxReserved());
 
   OldSpace* s = new OldSpace(heap);
   CHECK_NOT_NULL(s);
@@ -312,6 +310,7 @@ TEST(OldLargeObjectSpace) {
   // This test does not initialize allocated objects, which confuses the
   // incremental marker.
   FLAG_incremental_marking = false;
+  FLAG_max_heap_size = 20;
   v8::V8::Initialize();
 
   OldLargeObjectSpace* lo = CcTest::heap()->lo_space();
@@ -337,16 +336,18 @@ TEST(OldLargeObjectSpace) {
              ho.address(),
              HeapObject::RequiredAlignment(
                  ReadOnlyRoots(CcTest::i_isolate()).fixed_double_array_map())));
-
+  Isolate* isolate = CcTest::i_isolate();
+  HandleScope handle_scope(isolate);
   while (true) {
     {
       AllocationResult allocation = lo->AllocateRaw(lo_size);
       if (allocation.IsRetry()) break;
+      HeapObject ho = HeapObject::cast(allocation.ToObjectChecked());
+      Handle<HeapObject> keep_alive(ho, isolate);
     }
   }
 
   CHECK(!lo->IsEmpty());
-
   CHECK(lo->AllocateRaw(lo_size).IsRetry());
 }
 
@@ -516,6 +517,7 @@ void testAllocationObserver(Isolate* i_isolate, T* space) {
 }
 
 UNINITIALIZED_TEST(AllocationObserver) {
+  if (FLAG_single_generation) return;
   v8::Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
   v8::Isolate* isolate = v8::Isolate::New(create_params);
@@ -538,6 +540,7 @@ UNINITIALIZED_TEST(AllocationObserver) {
 }
 
 UNINITIALIZED_TEST(InlineAllocationObserverCadence) {
+  if (FLAG_single_generation) return;
   v8::Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
   v8::Isolate* isolate = v8::Isolate::New(create_params);
@@ -617,6 +620,7 @@ HEAP_TEST(Regress777177) {
 }
 
 HEAP_TEST(Regress791582) {
+  if (FLAG_single_generation) return;
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   Heap* heap = isolate->heap();
@@ -793,8 +797,7 @@ TEST(NoMemoryForNewPage) {
 
   // Memory allocator that will fail to allocate any pages.
   FailingPageAllocator failing_allocator;
-  TestMemoryAllocatorScope test_allocator_scope(isolate, 0, 0,
-                                                &failing_allocator);
+  TestMemoryAllocatorScope test_allocator_scope(isolate, 0, &failing_allocator);
   MemoryAllocator* memory_allocator = test_allocator_scope.allocator();
   OldSpace faked_space(heap);
   Page* page = memory_allocator->AllocatePage(

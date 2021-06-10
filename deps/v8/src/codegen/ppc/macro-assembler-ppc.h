@@ -28,8 +28,6 @@ inline MemOperand FieldMemOperand(Register object, int offset) {
   return MemOperand(object, offset - kHeapObjectTag);
 }
 
-enum RememberedSetAction { EMIT_REMEMBERED_SET, OMIT_REMEMBERED_SET };
-enum SmiCheck { INLINE_SMI_CHECK, OMIT_SMI_CHECK };
 enum LinkRegisterStatus { kLRHasNotBeenSaved, kLRHasBeenSaved };
 
 Register GetRegisterThatIsNotOneOf(Register reg1, Register reg2 = no_reg,
@@ -40,10 +38,6 @@ Register GetRegisterThatIsNotOneOf(Register reg1, Register reg2 = no_reg,
 
 // These exist to provide portability between 32 and 64bit
 #if V8_TARGET_ARCH_PPC64
-#define LoadPX ldx
-#define LoadPUX ldux
-#define StorePX stdx
-#define StorePUX stdux
 #define ShiftLeftImm sldi
 #define ShiftRightImm srdi
 #define ClearLeftImm clrldi
@@ -53,10 +47,6 @@ Register GetRegisterThatIsNotOneOf(Register reg1, Register reg2 = no_reg,
 #define ShiftRight_ srd
 #define ShiftRightArith srad
 #else
-#define LoadPX lwzx
-#define LoadPUX lwzux
-#define StorePX stwx
-#define StorePUX stwux
 #define ShiftLeftImm slwi
 #define ShiftRightImm srwi
 #define ClearLeftImm clrlwi
@@ -148,45 +138,16 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
     mov(kRootRegister, Operand(isolate_root));
   }
 
-  // These exist to provide portability between 32 and 64bit
-  void LoadP(Register dst, const MemOperand& mem, Register scratch = no_reg);
-  void LoadPU(Register dst, const MemOperand& mem, Register scratch = no_reg);
-  void LoadWordArith(Register dst, const MemOperand& mem,
-                     Register scratch = no_reg);
-  void StoreP(Register src, const MemOperand& mem, Register scratch = no_reg);
-  void StorePU(Register src, const MemOperand& mem, Register scratch = no_reg);
-
-  void LoadDouble(DoubleRegister dst, const MemOperand& mem,
-                  Register scratch = no_reg);
-  void LoadFloat32(DoubleRegister dst, const MemOperand& mem,
-                   Register scratch = no_reg);
   void LoadDoubleLiteral(DoubleRegister result, Double value, Register scratch);
-  void LoadSimd128(Simd128Register dst, const MemOperand& mem,
-                   Register ScratchReg, Simd128Register ScratchDoubleReg);
+  void LoadSimd128(Simd128Register dst, const MemOperand& mem);
 
   // load a literal signed int value <value> to GPR <dst>
   void LoadIntLiteral(Register dst, int value);
   // load an SMI value <value> to GPR <dst>
   void LoadSmiLiteral(Register dst, Smi smi);
 
-  void LoadSingle(DoubleRegister dst, const MemOperand& mem,
-                  Register scratch = no_reg);
-  void LoadSingleU(DoubleRegister dst, const MemOperand& mem,
-                   Register scratch = no_reg);
   void LoadPC(Register dst);
   void ComputeCodeStartAddress(Register dst);
-
-  void StoreDouble(DoubleRegister src, const MemOperand& mem,
-                   Register scratch = no_reg);
-  void StoreDoubleU(DoubleRegister src, const MemOperand& mem,
-                    Register scratch = no_reg);
-
-  void StoreSingle(DoubleRegister src, const MemOperand& mem,
-                   Register scratch = no_reg);
-  void StoreSingleU(DoubleRegister src, const MemOperand& mem,
-                    Register scratch = no_reg);
-  void StoreSimd128(Simd128Register src, const MemOperand& mem,
-                    Register ScratchReg, Simd128Register ScratchDoubleReg);
 
   void Cmpi(Register src1, const Operand& src2, Register scratch,
             CRegister cr = cr7);
@@ -216,33 +177,33 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
 
   // Push two registers.  Pushes leftmost register first (to highest address).
   void Push(Register src1, Register src2) {
-    StorePU(src2, MemOperand(sp, -2 * kSystemPointerSize));
-    StoreP(src1, MemOperand(sp, kSystemPointerSize));
+    StoreU64WithUpdate(src2, MemOperand(sp, -2 * kSystemPointerSize));
+    StoreU64(src1, MemOperand(sp, kSystemPointerSize));
   }
 
   // Push three registers.  Pushes leftmost register first (to highest address).
   void Push(Register src1, Register src2, Register src3) {
-    StorePU(src3, MemOperand(sp, -3 * kSystemPointerSize));
-    StoreP(src2, MemOperand(sp, kSystemPointerSize));
-    StoreP(src1, MemOperand(sp, 2 * kSystemPointerSize));
+    StoreU64WithUpdate(src3, MemOperand(sp, -3 * kSystemPointerSize));
+    StoreU64(src2, MemOperand(sp, kSystemPointerSize));
+    StoreU64(src1, MemOperand(sp, 2 * kSystemPointerSize));
   }
 
   // Push four registers.  Pushes leftmost register first (to highest address).
   void Push(Register src1, Register src2, Register src3, Register src4) {
-    StorePU(src4, MemOperand(sp, -4 * kSystemPointerSize));
-    StoreP(src3, MemOperand(sp, kSystemPointerSize));
-    StoreP(src2, MemOperand(sp, 2 * kSystemPointerSize));
-    StoreP(src1, MemOperand(sp, 3 * kSystemPointerSize));
+    StoreU64WithUpdate(src4, MemOperand(sp, -4 * kSystemPointerSize));
+    StoreU64(src3, MemOperand(sp, kSystemPointerSize));
+    StoreU64(src2, MemOperand(sp, 2 * kSystemPointerSize));
+    StoreU64(src1, MemOperand(sp, 3 * kSystemPointerSize));
   }
 
   // Push five registers.  Pushes leftmost register first (to highest address).
   void Push(Register src1, Register src2, Register src3, Register src4,
             Register src5) {
-    StorePU(src5, MemOperand(sp, -5 * kSystemPointerSize));
-    StoreP(src4, MemOperand(sp, kSystemPointerSize));
-    StoreP(src3, MemOperand(sp, 2 * kSystemPointerSize));
-    StoreP(src2, MemOperand(sp, 3 * kSystemPointerSize));
-    StoreP(src1, MemOperand(sp, 4 * kSystemPointerSize));
+    StoreU64WithUpdate(src5, MemOperand(sp, -5 * kSystemPointerSize));
+    StoreU64(src4, MemOperand(sp, kSystemPointerSize));
+    StoreU64(src3, MemOperand(sp, 2 * kSystemPointerSize));
+    StoreU64(src2, MemOperand(sp, 3 * kSystemPointerSize));
+    StoreU64(src1, MemOperand(sp, 4 * kSystemPointerSize));
   }
 
   enum PushArrayOrder { kNormal, kReverse };
@@ -253,50 +214,53 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
 
   // Pop two registers. Pops rightmost register first (from lower address).
   void Pop(Register src1, Register src2) {
-    LoadP(src2, MemOperand(sp, 0));
-    LoadP(src1, MemOperand(sp, kSystemPointerSize));
+    LoadU64(src2, MemOperand(sp, 0));
+    LoadU64(src1, MemOperand(sp, kSystemPointerSize));
     addi(sp, sp, Operand(2 * kSystemPointerSize));
   }
 
   // Pop three registers.  Pops rightmost register first (from lower address).
   void Pop(Register src1, Register src2, Register src3) {
-    LoadP(src3, MemOperand(sp, 0));
-    LoadP(src2, MemOperand(sp, kSystemPointerSize));
-    LoadP(src1, MemOperand(sp, 2 * kSystemPointerSize));
+    LoadU64(src3, MemOperand(sp, 0));
+    LoadU64(src2, MemOperand(sp, kSystemPointerSize));
+    LoadU64(src1, MemOperand(sp, 2 * kSystemPointerSize));
     addi(sp, sp, Operand(3 * kSystemPointerSize));
   }
 
   // Pop four registers.  Pops rightmost register first (from lower address).
   void Pop(Register src1, Register src2, Register src3, Register src4) {
-    LoadP(src4, MemOperand(sp, 0));
-    LoadP(src3, MemOperand(sp, kSystemPointerSize));
-    LoadP(src2, MemOperand(sp, 2 * kSystemPointerSize));
-    LoadP(src1, MemOperand(sp, 3 * kSystemPointerSize));
+    LoadU64(src4, MemOperand(sp, 0));
+    LoadU64(src3, MemOperand(sp, kSystemPointerSize));
+    LoadU64(src2, MemOperand(sp, 2 * kSystemPointerSize));
+    LoadU64(src1, MemOperand(sp, 3 * kSystemPointerSize));
     addi(sp, sp, Operand(4 * kSystemPointerSize));
   }
 
   // Pop five registers.  Pops rightmost register first (from lower address).
   void Pop(Register src1, Register src2, Register src3, Register src4,
            Register src5) {
-    LoadP(src5, MemOperand(sp, 0));
-    LoadP(src4, MemOperand(sp, kSystemPointerSize));
-    LoadP(src3, MemOperand(sp, 2 * kSystemPointerSize));
-    LoadP(src2, MemOperand(sp, 3 * kSystemPointerSize));
-    LoadP(src1, MemOperand(sp, 4 * kSystemPointerSize));
+    LoadU64(src5, MemOperand(sp, 0));
+    LoadU64(src4, MemOperand(sp, kSystemPointerSize));
+    LoadU64(src3, MemOperand(sp, 2 * kSystemPointerSize));
+    LoadU64(src2, MemOperand(sp, 3 * kSystemPointerSize));
+    LoadU64(src1, MemOperand(sp, 4 * kSystemPointerSize));
     addi(sp, sp, Operand(5 * kSystemPointerSize));
   }
 
-  void SaveRegisters(RegList registers);
-  void RestoreRegisters(RegList registers);
+  void MaybeSaveRegisters(RegList registers);
+  void MaybeRestoreRegisters(RegList registers);
 
-  void CallRecordWriteStub(Register object, Register address,
-                           RememberedSetAction remembered_set_action,
-                           SaveFPRegsMode fp_mode);
-  void CallRecordWriteStub(Register object, Register address,
-                           RememberedSetAction remembered_set_action,
-                           SaveFPRegsMode fp_mode, Address wasm_target);
-  void CallEphemeronKeyBarrier(Register object, Register address,
+  void CallEphemeronKeyBarrier(Register object, Register slot_address,
                                SaveFPRegsMode fp_mode);
+
+  void CallRecordWriteStubSaveRegisters(
+      Register object, Register slot_address,
+      RememberedSetAction remembered_set_action, SaveFPRegsMode fp_mode,
+      StubCallMode mode = StubCallMode::kCallBuiltinPointer);
+  void CallRecordWriteStub(
+      Register object, Register slot_address,
+      RememberedSetAction remembered_set_action, SaveFPRegsMode fp_mode,
+      StubCallMode mode = StubCallMode::kCallBuiltinPointer);
 
   void MultiPush(RegList regs, Register location = sp);
   void MultiPop(RegList regs, Register location = sp);
@@ -326,7 +290,7 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
                      Register exclusion3 = no_reg);
 
   // Load an object from the root table.
-  void LoadRoot(Register destination, RootIndex index) override {
+  void LoadRoot(Register destination, RootIndex index) final {
     LoadRoot(destination, index, al);
   }
   void LoadRoot(Register destination, RootIndex index, Condition cond);
@@ -396,8 +360,8 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   void MovFromFloatParameter(DoubleRegister dst);
   void MovFromFloatResult(DoubleRegister dst);
 
-  void Trap() override;
-  void DebugBreak() override;
+  void Trap();
+  void DebugBreak();
 
   // Calls Abort(msg) if the condition cond is not satisfied.
   // Use --debug_code to enable.
@@ -424,10 +388,9 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
                          Register src_high, uint32_t shift);
 #endif
 
-  void LoadFromConstantsTable(Register destination,
-                              int constant_index) override;
-  void LoadRootRegisterOffset(Register destination, intptr_t offset) override;
-  void LoadRootRelative(Register destination, int32_t offset) override;
+  void LoadFromConstantsTable(Register destination, int constant_index) final;
+  void LoadRootRegisterOffset(Register destination, intptr_t offset) final;
+  void LoadRootRelative(Register destination, int32_t offset) final;
 
   // Jump, Call, and Ret pseudo instructions implementing inter-working.
   void Jump(Register target);
@@ -435,7 +398,7 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
             CRegister cr = cr7);
   void Jump(Handle<Code> code, RelocInfo::Mode rmode, Condition cond = al,
             CRegister cr = cr7);
-  void Jump(const ExternalReference& reference) override;
+  void Jump(const ExternalReference& reference);
   void Jump(intptr_t target, RelocInfo::Mode rmode, Condition cond = al,
             CRegister cr = cr7);
   void Call(Register target);
@@ -447,13 +410,13 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   // Load the builtin given by the Smi in |builtin_index| into the same
   // register.
   void LoadEntryFromBuiltinIndex(Register builtin_index);
-  void LoadCodeObjectEntry(Register destination, Register code_object) override;
-  void CallCodeObject(Register code_object) override;
+  void LoadCodeObjectEntry(Register destination, Register code_object);
+  void CallCodeObject(Register code_object);
   void JumpCodeObject(Register code_object,
-                      JumpMode jump_mode = JumpMode::kJump) override;
+                      JumpMode jump_mode = JumpMode::kJump);
 
-  void CallBuiltinByIndex(Register builtin_index) override;
-  void CallForDeoptimization(Builtins::Name target, int deopt_id, Label* exit,
+  void CallBuiltinByIndex(Register builtin_index);
+  void CallForDeoptimization(Builtin target, int deopt_id, Label* exit,
                              DeoptimizeKind kind, Label* ret,
                              Label* jump_deoptimization_entry_label);
 
@@ -509,7 +472,8 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   void Move(Register dst, Register src, Condition cond = al);
   void Move(DoubleRegister dst, DoubleRegister src);
 
-  void SmiUntag(Register dst, const MemOperand& src, RCBit rc);
+  void SmiUntag(Register dst, const MemOperand& src, RCBit rc = LeaveRC,
+                Register scratch = no_reg);
   void SmiUntag(Register reg, RCBit rc = LeaveRC) { SmiUntag(reg, reg, rc); }
 
   void SmiUntag(Register dst, Register src, RCBit rc = LeaveRC) {
@@ -698,9 +662,6 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
                           const MemOperand& field_operand,
                           const Register& scratch = no_reg);
 
-  // Loads a field containing smi value and untags it.
-  void SmiUntagField(Register dst, const MemOperand& src, RCBit rc = LeaveRC);
-
   // Compresses and stores tagged value to given on-heap location.
   void StoreTaggedField(const Register& value,
                         const MemOperand& dst_field_operand,
@@ -716,8 +677,44 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   void DecompressAnyTagged(Register destination, MemOperand field_operand);
   void DecompressAnyTagged(Register destination, Register source);
 
-  void LoadWord(Register dst, const MemOperand& mem, Register scratch);
-  void StoreWord(Register src, const MemOperand& mem, Register scratch);
+  void LoadF64(DoubleRegister dst, const MemOperand& mem,
+               Register scratch = no_reg);
+  void LoadF32(DoubleRegister dst, const MemOperand& mem,
+               Register scratch = no_reg);
+
+  void StoreF32(DoubleRegister src, const MemOperand& mem,
+                Register scratch = no_reg);
+  void StoreF64(DoubleRegister src, const MemOperand& mem,
+                Register scratch = no_reg);
+
+  void LoadF32WithUpdate(DoubleRegister dst, const MemOperand& mem,
+                         Register scratch = no_reg);
+  void LoadF64WithUpdate(DoubleRegister dst, const MemOperand& mem,
+                         Register scratch = no_reg);
+
+  void StoreF32WithUpdate(DoubleRegister src, const MemOperand& mem,
+                          Register scratch = no_reg);
+  void StoreF64WithUpdate(DoubleRegister src, const MemOperand& mem,
+                          Register scratch = no_reg);
+
+  void StoreSimd128(Simd128Register src, const MemOperand& mem);
+
+  void LoadU64(Register dst, const MemOperand& mem, Register scratch = no_reg);
+  void LoadU32(Register dst, const MemOperand& mem, Register scratch = no_reg);
+  void LoadS32(Register dst, const MemOperand& mem, Register scratch = no_reg);
+  void LoadU16(Register dst, const MemOperand& mem, Register scratch = no_reg);
+  void LoadS16(Register dst, const MemOperand& mem, Register scratch = no_reg);
+  void LoadU8(Register dst, const MemOperand& mem, Register scratch = no_reg);
+
+  void StoreU64(Register src, const MemOperand& mem, Register scratch = no_reg);
+  void StoreU32(Register src, const MemOperand& mem, Register scratch);
+  void StoreU16(Register src, const MemOperand& mem, Register scratch);
+  void StoreU8(Register src, const MemOperand& mem, Register scratch);
+
+  void LoadU64WithUpdate(Register dst, const MemOperand& mem,
+                         Register scratch = no_reg);
+  void StoreU64WithUpdate(Register src, const MemOperand& mem,
+                          Register scratch = no_reg);
 
  private:
   static const int kSmiShift = kSmiTagSize + kSmiShiftSize;
@@ -727,10 +724,6 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   void CallCFunctionHelper(Register function, int num_reg_arguments,
                            int num_double_arguments,
                            bool has_function_descriptor);
-  void CallRecordWriteStub(Register object, Register address,
-                           RememberedSetAction remembered_set_action,
-                           SaveFPRegsMode fp_mode, int builtin_index,
-                           Address wasm_target);
 };
 
 // MacroAssembler implements a collection of frequently used acros.
@@ -743,11 +736,11 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   // TODO(victorgomes): Remove this function once we stick with the reversed
   // arguments order.
   void LoadReceiver(Register dest, Register argc) {
-    LoadP(dest, MemOperand(sp, 0));
+    LoadU64(dest, MemOperand(sp, 0));
   }
 
   void StoreReceiver(Register rec, Register argc, Register scratch) {
-    StoreP(rec, MemOperand(sp, 0));
+    StoreU64(rec, MemOperand(sp, 0));
   }
 
   // ---------------------------------------------------------------------------
@@ -761,8 +754,8 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   void RecordWriteField(
       Register object, int offset, Register value, Register scratch,
       LinkRegisterStatus lr_status, SaveFPRegsMode save_fp,
-      RememberedSetAction remembered_set_action = EMIT_REMEMBERED_SET,
-      SmiCheck smi_check = INLINE_SMI_CHECK);
+      RememberedSetAction remembered_set_action = RememberedSetAction::kEmit,
+      SmiCheck smi_check = SmiCheck::kInline);
 
   // For a given |object| notify the garbage collector that the slot |address|
   // has been written.  |value| is the object being stored. The value and
@@ -770,8 +763,8 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   void RecordWrite(
       Register object, Register address, Register value,
       LinkRegisterStatus lr_status, SaveFPRegsMode save_fp,
-      RememberedSetAction remembered_set_action = EMIT_REMEMBERED_SET,
-      SmiCheck smi_check = INLINE_SMI_CHECK);
+      RememberedSetAction remembered_set_action = RememberedSetAction::kEmit,
+      SmiCheck smi_check = SmiCheck::kInline);
 
   // Enter exit frame.
   // stack_space - extra stack space, used for parameters before call to C.
@@ -797,18 +790,6 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   // than assembler-ppc and may generate variable length sequences
 
   // load a literal double value <value> to FPR <result>
-
-  void LoadHalfWord(Register dst, const MemOperand& mem,
-                    Register scratch = no_reg);
-  void LoadHalfWordArith(Register dst, const MemOperand& mem,
-                         Register scratch = no_reg);
-  void StoreHalfWord(Register src, const MemOperand& mem, Register scratch);
-
-  void LoadByte(Register dst, const MemOperand& mem, Register scratch);
-  void StoreByte(Register src, const MemOperand& mem, Register scratch);
-
-  void LoadDoubleU(DoubleRegister dst, const MemOperand& mem,
-                   Register scratch = no_reg);
 
   void Cmplwi(Register src1, const Operand& src2, Register scratch,
               CRegister cr = cr7);
@@ -837,7 +818,7 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   // Invoke the JavaScript function code by either calling or jumping.
   void InvokeFunctionCode(Register function, Register new_target,
                           Register expected_parameter_count,
-                          Register actual_parameter_count, InvokeFlag flag);
+                          Register actual_parameter_count, InvokeType type);
 
   // On function call, call into the debugger if necessary.
   void CheckDebugHook(Register fun, Register new_target,
@@ -848,12 +829,9 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   // current context to the context in the function before invoking.
   void InvokeFunctionWithNewTarget(Register function, Register new_target,
                                    Register actual_parameter_count,
-                                   InvokeFlag flag);
+                                   InvokeType type);
   void InvokeFunction(Register function, Register expected_parameter_count,
-                      Register actual_parameter_count, InvokeFlag flag);
-
-  // Frame restart support
-  void MaybeDropFrames();
+                      Register actual_parameter_count, InvokeType type);
 
   // Exception handling
 
@@ -926,22 +904,22 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
 
   // Call a runtime routine.
   void CallRuntime(const Runtime::Function* f, int num_arguments,
-                   SaveFPRegsMode save_doubles = kDontSaveFPRegs);
+                   SaveFPRegsMode save_doubles = SaveFPRegsMode::kIgnore);
   void CallRuntimeSaveDoubles(Runtime::FunctionId fid) {
     const Runtime::Function* function = Runtime::FunctionForId(fid);
-    CallRuntime(function, function->nargs, kSaveFPRegs);
+    CallRuntime(function, function->nargs, SaveFPRegsMode::kSave);
   }
 
   // Convenience function: Same as above, but takes the fid instead.
   void CallRuntime(Runtime::FunctionId fid,
-                   SaveFPRegsMode save_doubles = kDontSaveFPRegs) {
+                   SaveFPRegsMode save_doubles = SaveFPRegsMode::kIgnore) {
     const Runtime::Function* function = Runtime::FunctionForId(fid);
     CallRuntime(function, function->nargs, save_doubles);
   }
 
   // Convenience function: Same as above, but takes the fid instead.
   void CallRuntime(Runtime::FunctionId fid, int num_arguments,
-                   SaveFPRegsMode save_doubles = kDontSaveFPRegs) {
+                   SaveFPRegsMode save_doubles = SaveFPRegsMode::kIgnore) {
     CallRuntime(Runtime::FunctionForId(fid), num_arguments, save_doubles);
   }
 
@@ -963,9 +941,19 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   // StatsCounter support
 
   void IncrementCounter(StatsCounter* counter, int value, Register scratch1,
-                        Register scratch2);
+                        Register scratch2) {
+    if (!FLAG_native_code_counters) return;
+    EmitIncrementCounter(counter, value, scratch1, scratch2);
+  }
+  void EmitIncrementCounter(StatsCounter* counter, int value, Register scratch1,
+                            Register scratch2);
   void DecrementCounter(StatsCounter* counter, int value, Register scratch1,
-                        Register scratch2);
+                        Register scratch2) {
+    if (!FLAG_native_code_counters) return;
+    EmitDecrementCounter(counter, value, scratch1, scratch2);
+  }
+  void EmitDecrementCounter(StatsCounter* counter, int value, Register scratch1,
+                            Register scratch2);
 
   // ---------------------------------------------------------------------------
   // Stack limit utilities
@@ -1053,7 +1041,7 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   // Helper functions for generating invokes.
   void InvokePrologue(Register expected_parameter_count,
                       Register actual_parameter_count, Label* done,
-                      InvokeFlag flag);
+                      InvokeType type);
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(MacroAssembler);
 };

@@ -5,6 +5,8 @@ include_rules = [
   "+src/asmjs/asm-js.h",
   "-src/baseline",
   "+src/baseline/baseline.h",
+  "+src/baseline/baseline-batch-compiler.h",
+  "+src/baseline/baseline-osr-inl.h",
   "+src/baseline/bytecode-offset-iterator.h",
   "-src/bigint",
   "+src/bigint/bigint.h",
@@ -14,6 +16,7 @@ include_rules = [
   "+src/compiler/wasm-compiler.h",
   "-src/heap",
   "+src/heap/basic-memory-chunk.h",
+  "+src/heap/code-range.h",
   "+src/heap/combined-heap.h",
   "+src/heap/embedder-tracing.h",
   "+src/heap/factory.h",
@@ -69,6 +72,9 @@ specific_include_rules = {
     "+include/libplatform/libplatform.h",
     "+include/libplatform/v8-tracing.h",
     "+perfetto/tracing.h"
+  ],
+  "d8-platforms\.cc": [
+    "+include/libplatform/libplatform.h",
   ],
   "builtins-trace\.cc": [
     "+protos/perfetto",

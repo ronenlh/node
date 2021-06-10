@@ -74,11 +74,11 @@ bool AreStdlibMembersValid(Isolate* isolate, Handle<JSReceiver> stdlib,
     if (!value->IsJSFunction()) return false;                              \
     SharedFunctionInfo shared = Handle<JSFunction>::cast(value)->shared(); \
     if (!shared.HasBuiltinId() ||                                          \
-        shared.builtin_id() != Builtins::kMath##FName) {                   \
+        shared.builtin_id() != Builtin::kMath##FName) {                    \
       return false;                                                        \
     }                                                                      \
     DCHECK_EQ(shared.GetCode(),                                            \
-              isolate->builtins()->builtin(Builtins::kMath##FName));       \
+              isolate->builtins()->builtin(Builtin::kMath##FName));        \
   }
   STDLIB_MATH_FUNCTION_LIST(STDLIB_MATH_FUNC)
 #undef STDLIB_MATH_FUNC
@@ -300,9 +300,7 @@ inline bool IsValidAsmjsMemorySize(size_t size) {
   // Enforce asm.js spec minimum size.
   if (size < (1u << 12u)) return false;
   // Enforce engine-limited and flag-limited maximum allocation size.
-  if (size > wasm::max_mem_pages() * uint64_t{wasm::kWasmPageSize}) {
-    return false;
-  }
+  if (size > wasm::max_mem_bytes()) return false;
   // Enforce power-of-2 sizes for 2^12 - 2^24.
   if (size < (1u << 24u)) {
     uint32_t size32 = static_cast<uint32_t>(size);

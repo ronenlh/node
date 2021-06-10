@@ -115,19 +115,19 @@ void BaselineAssembler::JumpIfNotSmi(Register value, Label* target,
   __ JumpIfNotSmi(value, target);
 }
 
-void BaselineAssembler::CallBuiltin(Builtins::Name builtin) {
+void BaselineAssembler::CallBuiltin(Builtin builtin) {
   if (masm()->options().short_builtin_calls) {
     // Generate pc-relative call.
     __ CallBuiltin(builtin);
   } else {
     ScratchRegisterScope temps(this);
     Register temp = temps.AcquireScratch();
-    __ LoadEntryFromBuiltinIndex(builtin, temp);
+    __ LoadEntryFromBuiltin(builtin, temp);
     __ Call(temp);
   }
 }
 
-void BaselineAssembler::TailCallBuiltin(Builtins::Name builtin) {
+void BaselineAssembler::TailCallBuiltin(Builtin builtin) {
   if (masm()->options().short_builtin_calls) {
     // Generate pc-relative call.
     __ TailCallBuiltin(builtin);
@@ -147,7 +147,7 @@ void BaselineAssembler::TailCallBuiltin(Builtins::Name builtin) {
     UseScratchRegisterScope temps(masm());
     temps.Exclude(temp);
 
-    __ LoadEntryFromBuiltinIndex(builtin, temp);
+    __ LoadEntryFromBuiltin(builtin, temp);
     __ Jump(temp);
   }
 }
@@ -167,7 +167,7 @@ void BaselineAssembler::CmpInstanceType(Register map,
                                         InstanceType instance_type) {
   ScratchRegisterScope temps(this);
   Register type = temps.AcquireScratch();
-  if (emit_debug_code()) {
+  if (FLAG_debug_code) {
     __ AssertNotSmi(map);
     __ CompareObjectType(map, type, type, MAP_TYPE);
     __ Assert(eq, AbortReason::kUnexpectedValue);
@@ -422,7 +422,7 @@ void BaselineAssembler::StoreTaggedFieldWithWriteBarrier(Register target,
                                                          Register value) {
   __ StoreTaggedField(value, FieldMemOperand(target, offset));
   __ RecordWriteField(target, offset, value, kLRHasNotBeenSaved,
-                      kDontSaveFPRegs);
+                      SaveFPRegsMode::kIgnore);
 }
 void BaselineAssembler::StoreTaggedFieldNoWriteBarrier(Register target,
                                                        int offset,

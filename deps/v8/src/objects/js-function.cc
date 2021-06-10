@@ -101,9 +101,6 @@ bool HighestTierOf(CodeKinds kinds, CodeKind* highest_tier) {
   } else if ((kinds & CodeKindFlag::BASELINE) != 0) {
     *highest_tier = CodeKind::BASELINE;
     return true;
-  } else if ((kinds & CodeKindFlag::NATIVE_CONTEXT_INDEPENDENT) != 0) {
-    *highest_tier = CodeKind::NATIVE_CONTEXT_INDEPENDENT;
-    return true;
   } else if ((kinds & CodeKindFlag::INTERPRETED_FUNCTION) != 0) {
     *highest_tier = CodeKind::INTERPRETED_FUNCTION;
     return true;
@@ -122,7 +119,7 @@ bool JSFunction::ActiveTierIsIgnition() const {
   DCHECK_IMPLIES(result, code.is_interpreter_trampoline_builtin() ||
                              (CodeKindIsOptimizedJSFunction(code.kind()) &&
                               code.marked_for_deoptimization()) ||
-                             (code.builtin_index() == Builtins::kCompileLazy &&
+                             (code.builtin_index() == Builtin::kCompileLazy &&
                               shared().IsInterpreted()));
 #endif  // DEBUG
   return result;
@@ -135,7 +132,6 @@ CodeKind JSFunction::GetActiveTier() const {
   DCHECK(highest_tier == CodeKind::TURBOFAN ||
          highest_tier == CodeKind::BASELINE ||
          highest_tier == CodeKind::TURBOPROP ||
-         highest_tier == CodeKind::NATIVE_CONTEXT_INDEPENDENT ||
          highest_tier == CodeKind::INTERPRETED_FUNCTION);
   return highest_tier;
 }
@@ -143,11 +139,6 @@ CodeKind JSFunction::GetActiveTier() const {
 bool JSFunction::ActiveTierIsTurbofan() const {
   if (!shared().HasBytecodeArray()) return false;
   return GetActiveTier() == CodeKind::TURBOFAN;
-}
-
-bool JSFunction::ActiveTierIsNCI() const {
-  if (!shared().HasBytecodeArray()) return false;
-  return GetActiveTier() == CodeKind::NATIVE_CONTEXT_INDEPENDENT;
 }
 
 bool JSFunction::ActiveTierIsBaseline() const {
@@ -193,14 +184,6 @@ bool JSFunction::CanDiscardCompiled() const {
   if (CodeKindIsOptimizedJSFunction(code().kind())) return true;
   CodeKinds result = GetAvailableCodeKinds();
   return (result & kJSFunctionCodeKindsMask) != 0;
-}
-
-// static
-MaybeHandle<NativeContext> JSBoundFunction::GetFunctionRealm(
-    Handle<JSBoundFunction> function) {
-  DCHECK(function->map().is_constructor());
-  return JSReceiver::GetFunctionRealm(
-      handle(function->bound_target_function(), function->GetIsolate()));
 }
 
 // static
@@ -268,13 +251,6 @@ Handle<Object> JSFunction::GetName(Isolate* isolate,
     return isolate->factory()->anonymous_string();
   }
   return handle(function->shared().Name(), isolate);
-}
-
-// static
-Handle<NativeContext> JSFunction::GetFunctionRealm(
-    Handle<JSFunction> function) {
-  DCHECK(function->map().is_constructor());
-  return handle(function->context().native_context(), function->GetIsolate());
 }
 
 // static
@@ -361,6 +337,14 @@ void JSFunction::InitializeFeedbackCell(
     Handle<JSFunction> function, IsCompiledScope* is_compiled_scope,
     bool reset_budget_for_feedback_allocation) {
   Isolate* const isolate = function->GetIsolate();
+#if V8_ENABLE_WEBASSEMBLY
+  // The following checks ensure that the feedback vectors are compatible with
+  // the feedback metadata. For Asm / Wasm functions we never allocate / use
+  // feedback vectors, so a mismatch between the metadata and feedback vector is
+  // harmless. The checks could fail for functions that has has_asm_wasm_broken
+  // set at runtime (for ex: failed instantiation).
+  if (function->shared().HasAsmWasmData()) return;
+#endif  // V8_ENABLE_WEBASSEMBLY
 
   if (function->has_feedback_vector()) {
     CHECK_EQ(function->feedback_vector().length(),
@@ -376,7 +360,6 @@ void JSFunction::InitializeFeedbackCell(
 
   const bool needs_feedback_vector =
       !FLAG_lazy_feedback_allocation || FLAG_always_opt ||
-      function->shared().may_have_cached_code() ||
       // We also need a feedback vector for certain log events, collecting type
       // profile and more precise code coverage.
       FLAG_log_function_events || !isolate->is_best_effort_code_coverage() ||
@@ -410,7 +393,7 @@ void SetInstancePrototype(Isolate* isolate, Handle<JSFunction> function,
       // Put the value in the initial map field until an initial map is needed.
       // At that point, a new initial map is created and the prototype is put
       // into the initial map where it belongs.
-      function->set_prototype_or_initial_map(*value);
+      function->set_prototype_or_initial_map(*value, kReleaseStore);
     } else {
       Handle<Map> new_map =
           Map::Copy(isolate, initial_map, "SetInstancePrototype");
@@ -435,7 +418,7 @@ void SetInstancePrototype(Isolate* isolate, Handle<JSFunction> function,
     // Put the value in the initial map field until an initial map is
     // needed.  At that point, a new initial map is created and the
     // prototype is put into the initial map where it belongs.
-    function->set_prototype_or_initial_map(*value);
+    function->set_prototype_or_initial_map(*value, kReleaseStore);
     if (value->IsJSObject()) {
       // Optimize as prototype to detach it from its transition tree.
       JSObject::OptimizeAsPrototype(Handle<JSObject>::cast(value));
@@ -498,7 +481,7 @@ void JSFunction::SetInitialMap(Isolate* isolate, Handle<JSFunction> function,
     Map::SetPrototype(isolate, map, prototype);
   }
   map->SetConstructor(*constructor);
-  function->set_prototype_or_initial_map(*map);
+  function->set_prototype_or_initial_map(*map, kReleaseStore);
   if (FLAG_log_maps) {
     LOG(isolate, MapEvent("InitialMap", Handle<Map>(), map, "",
                           SharedFunctionInfo::DebugName(
@@ -804,6 +787,61 @@ MaybeHandle<Map> JSFunction::GetDerivedMap(Isolate* isolate,
     Map::SetPrototype(isolate, map, Handle<HeapObject>::cast(prototype));
   map->SetConstructor(*constructor);
   return map;
+}
+
+namespace {
+
+// Assert that the computations in TypedArrayElementsKindToConstructorIndex and
+// TypedArrayElementsKindToRabGsabCtorIndex are sound.
+#define TYPED_ARRAY_CASE(Type, type, TYPE, ctype)                         \
+  STATIC_ASSERT(Context::TYPE##_ARRAY_FUN_INDEX ==                        \
+                Context::FIRST_FIXED_TYPED_ARRAY_FUN_INDEX +              \
+                    ElementsKind::TYPE##_ELEMENTS -                       \
+                    ElementsKind::FIRST_FIXED_TYPED_ARRAY_ELEMENTS_KIND); \
+  STATIC_ASSERT(Context::RAB_GSAB_##TYPE##_ARRAY_MAP_INDEX ==             \
+                Context::FIRST_RAB_GSAB_TYPED_ARRAY_MAP_INDEX +           \
+                    ElementsKind::TYPE##_ELEMENTS -                       \
+                    ElementsKind::FIRST_FIXED_TYPED_ARRAY_ELEMENTS_KIND);
+
+TYPED_ARRAYS(TYPED_ARRAY_CASE)
+#undef TYPED_ARRAY_CASE
+
+int TypedArrayElementsKindToConstructorIndex(ElementsKind elements_kind) {
+  return Context::FIRST_FIXED_TYPED_ARRAY_FUN_INDEX + elements_kind -
+         ElementsKind::FIRST_FIXED_TYPED_ARRAY_ELEMENTS_KIND;
+}
+
+int TypedArrayElementsKindToRabGsabCtorIndex(ElementsKind elements_kind) {
+  return Context::FIRST_RAB_GSAB_TYPED_ARRAY_MAP_INDEX + elements_kind -
+         ElementsKind::FIRST_FIXED_TYPED_ARRAY_ELEMENTS_KIND;
+}
+
+}  // namespace
+
+Handle<Map> JSFunction::GetDerivedRabGsabMap(Isolate* isolate,
+                                             Handle<JSFunction> constructor,
+                                             Handle<JSReceiver> new_target) {
+  Handle<Map> map =
+      GetDerivedMap(isolate, constructor, new_target).ToHandleChecked();
+  {
+    DisallowHeapAllocation no_alloc;
+    NativeContext context = isolate->context().native_context();
+    int ctor_index =
+        TypedArrayElementsKindToConstructorIndex(map->elements_kind());
+    if (*new_target == context.get(ctor_index)) {
+      ctor_index =
+          TypedArrayElementsKindToRabGsabCtorIndex(map->elements_kind());
+      return handle(Map::cast(context.get(ctor_index)), isolate);
+    }
+  }
+
+  // This only happens when subclassing TypedArrays. Create a new map with the
+  // corresponding RAB / GSAB ElementsKind. Note: the map is not cached and
+  // reused -> every array gets a unique map, making ICs slow.
+  Handle<Map> rab_gsab_map = Map::Copy(isolate, map, "RAB / GSAB");
+  rab_gsab_map->set_elements_kind(
+      GetCorrespondingRabGsabElementsKind(map->elements_kind()));
+  return rab_gsab_map;
 }
 
 int JSFunction::ComputeInstanceSizeWithMinSlack(Isolate* isolate) {

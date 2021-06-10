@@ -275,8 +275,7 @@ void InstructionSelector::VisitStackSlot(Node* node) {
   OperandGenerator g(this);
 
   Emit(kArchStackSlot, g.DefineAsRegister(node),
-       sequence()->AddImmediate(Constant(slot)),
-       sequence()->AddImmediate(Constant(alignment)), 0, nullptr);
+       sequence()->AddImmediate(Constant(slot)), 0, nullptr);
 }
 
 void InstructionSelector::VisitAbortCSAAssert(Node* node) {
@@ -372,6 +371,7 @@ void InstructionSelector::VisitLoad(Node* node) {
     case MachineRepresentation::kCompressedPointer:  // Fall through.
     case MachineRepresentation::kCompressed:         // Fall through.
     case MachineRepresentation::kWord64:             // Fall through.
+    case MachineRepresentation::kMapWord:            // Fall through.
     case MachineRepresentation::kNone:
       UNREACHABLE();
   }
@@ -457,6 +457,7 @@ void InstructionSelector::VisitStore(Node* node) {
       case MachineRepresentation::kCompressedPointer:  // Fall through.
       case MachineRepresentation::kCompressed:         // Fall through.
       case MachineRepresentation::kWord64:             // Fall through.
+      case MachineRepresentation::kMapWord:            // Fall through.
       case MachineRepresentation::kNone:
         UNREACHABLE();
     }
@@ -1432,6 +1433,7 @@ void InstructionSelector::VisitUnalignedLoad(Node* node) {
     case MachineRepresentation::kCompressedPointer:  // Fall through.
     case MachineRepresentation::kCompressed:         // Fall through.
     case MachineRepresentation::kWord64:             // Fall through.
+    case MachineRepresentation::kMapWord:            // Fall through.
     case MachineRepresentation::kNone:
       UNREACHABLE();
   }
@@ -1485,6 +1487,7 @@ void InstructionSelector::VisitUnalignedStore(Node* node) {
     case MachineRepresentation::kCompressedPointer:  // Fall through.
     case MachineRepresentation::kCompressed:         // Fall through.
     case MachineRepresentation::kWord64:             // Fall through.
+    case MachineRepresentation::kMapWord:            // Fall through.
     case MachineRepresentation::kNone:
       UNREACHABLE();
   }
@@ -1630,11 +1633,12 @@ void InstructionSelector::VisitStackPointerGreaterThan(
   InstructionOperand* const outputs = nullptr;
   const int output_count = 0;
 
+  // TempRegister(0) is used to store the comparison result.
   // Applying an offset to this stack check requires a temp register. Offsets
   // are only applied to the first stack check. If applying an offset, we must
   // ensure the input and temp registers do not alias, thus kUniqueRegister.
-  InstructionOperand temps[] = {g.TempRegister()};
-  const int temp_count = (kind == StackCheckKind::kJSFunctionEntry ? 1 : 0);
+  InstructionOperand temps[] = {g.TempRegister(), g.TempRegister()};
+  const int temp_count = (kind == StackCheckKind::kJSFunctionEntry ? 2 : 1);
   const auto register_mode = (kind == StackCheckKind::kJSFunctionEntry)
                                  ? OperandGenerator::kUniqueRegister
                                  : OperandGenerator::kRegister;
@@ -2498,6 +2502,12 @@ void InstructionSelector::VisitF64x2Pmin(Node* node) {
 
 void InstructionSelector::VisitF64x2Pmax(Node* node) {
   VisitUniqueRRR(this, kMipsF64x2Pmax, node);
+}
+
+void InstructionSelector::AddOutputToSelectContinuation(OperandGenerator* g,
+                                                        int first_input_index,
+                                                        Node* node) {
+  UNREACHABLE();
 }
 
 // static

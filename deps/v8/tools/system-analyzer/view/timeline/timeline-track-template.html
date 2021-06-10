@@ -25,10 +25,15 @@ found in the LICENSE file. -->
     opacity: 0.5;
   }
 
-  #timelineChunks {
+  #timelineSamples, #timelineChunks,
+  #timelineMarkers, #timelineAnnotations {
+    top: 0px;
     height: 200px;
     position: absolute;
     margin-right: 100px;
+  }
+  #timelineMarkers, #timelineAnnotations {
+    pointer-events: none;
   }
 
   #timelineCanvas {
@@ -46,6 +51,7 @@ found in the LICENSE file. -->
     bottom: 0px;
     background-color: var(--on-surface-color);
     cursor: pointer;
+    content-visibility: auto;
   }
   .chunk:hover {
     border-radius: 2px 2px 0 0;
@@ -106,10 +112,12 @@ found in the LICENSE file. -->
     padding: 1px 3px 2px 3px;
   }
 
+  #legendTable td {
+    padding-top: 3px;
+  }
   /* Center colors */
   #legendTable td:nth-of-type(4n+1) {
     text-align: center;
-    padding-top: 3px;
   }
   /* Left align text*/
   #legendTable td:nth-of-type(4n+2) {
@@ -152,7 +160,6 @@ found in the LICENSE file. -->
     position: absolute;
   }
 
-
   .content {
     display: flex;
     position: relative;
@@ -172,6 +179,50 @@ found in the LICENSE file. -->
     flex: initial;
   }
 
+  .flame {
+    background-color: gray;
+    overflow: hidden;
+    height: 10px;
+    position: absolute;
+    font-size: 8px;
+    content-visibility: auto;
+  }
+  .flame.Opt{
+    background-color: red;
+  }
+  .flame.Baseline{
+    background-color: blue;
+  }
+  .flame.default {
+    background-color: black;
+  }
+  .txt {
+    font: 8px monospace;
+  }
+  .annotationLabel {
+    fill: var(--on-surface-color);
+    font-size: 9px;
+  }
+  .annotationPoint {
+    fill: var(--on-background-color);
+    stroke-width: 1;
+  }
+  .strokeBG {
+    stroke: var(--on-background-color);
+    stroke-width: 2;
+    fill: none;
+  }
+  .markerLine {
+    stroke: var(--on-background-color);
+    stroke-dasharray: 2 2;
+  }
+  .markerText {
+    fill: var(--on-surface-color);
+    dominant-baseline: hanging;
+    font-size: 9px;
+  }
+  #scalableContent {
+  }
 </style>
 
 <div class="content">
@@ -186,7 +237,11 @@ found in the LICENSE file. -->
       <div id="rightHandle"></div>
     </div>
     <div id="timelineLabel">Frequency</div>
-    <div id="timelineChunks"></div>
+    <svg id="timelineChunks" xmlns="http://www.w3.org/2000/svg">
+      <g id="scalableContent"></g>
+    </svg>
+    <svg id="timelineAnnotations" xmlns="http://www.w3.org/2000/svg"></svg>
+    <svg id="timelineMarkers" xmlns="http://www.w3.org/2000/svg"></svg>
     <canvas id="timelineCanvas"></canvas>
   </div>
 
@@ -194,6 +249,7 @@ found in the LICENSE file. -->
     <table id="legendTable">
       <thead>
         <tr>
+          <td></td>
           <td>Type</td>
           <td>Count</td>
           <td>Percent</td>

@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "src/wasm/wasm-module-builder.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/wasm/wasm-run-utils.h"
 #include "test/common/wasm/test-signatures.h"
@@ -413,7 +414,7 @@ void TestTableInitElems(TestExecutionTier execution_tier, int table_index) {
   }
 
   // Passive element segment has [f0, f1, f2, f3, f4, null].
-  function_indexes.push_back(WasmElemSegment::kNullIndex);
+  function_indexes.push_back(WasmModuleBuilder::kNullIndex);
 
   // Add 10 function tables, even though we only test one table.
   for (int i = 0; i < 10; ++i) {
@@ -446,19 +447,19 @@ void TestTableInitElems(TestExecutionTier execution_tier, int table_index) {
 
   // Test actual writes.
   r.CheckCallViaJS(0, 0, 0, 1);
-  CheckTableCall(isolate, table, &r, call_index, 0, null, null, null, null);
+  CheckTableCall(isolate, table, &r, call_index, 0.0, null, null, null, null);
   r.CheckCallViaJS(0, 0, 0, 2);
-  CheckTableCall(isolate, table, &r, call_index, 0, 1, null, null, null);
+  CheckTableCall(isolate, table, &r, call_index, 0.0, 1.0, null, null, null);
   r.CheckCallViaJS(0, 0, 0, 3);
-  CheckTableCall(isolate, table, &r, call_index, 0, 1, 2, null, null);
+  CheckTableCall(isolate, table, &r, call_index, 0.0, 1.0, 2.0, null, null);
   r.CheckCallViaJS(0, 3, 0, 2);
-  CheckTableCall(isolate, table, &r, call_index, 0, 1, 2, 0, 1);
+  CheckTableCall(isolate, table, &r, call_index, 0.0, 1.0, 2.0, 0.0, 1.0);
   r.CheckCallViaJS(0, 3, 1, 2);
-  CheckTableCall(isolate, table, &r, call_index, 0, 1, 2, 1, 2);
+  CheckTableCall(isolate, table, &r, call_index, 0.0, 1.0, 2.0, 1.0, 2.0);
   r.CheckCallViaJS(0, 3, 2, 2);
-  CheckTableCall(isolate, table, &r, call_index, 0, 1, 2, 2, 3);
+  CheckTableCall(isolate, table, &r, call_index, 0.0, 1.0, 2.0, 2.0, 3.0);
   r.CheckCallViaJS(0, 3, 3, 2);
-  CheckTableCall(isolate, table, &r, call_index, 0, 1, 2, 3, 4);
+  CheckTableCall(isolate, table, &r, call_index, 0.0, 1.0, 2.0, 3.0, 4.0);
 }
 
 WASM_COMPILED_EXEC_TEST(TableInitElems0) {
@@ -669,21 +670,21 @@ void TestTableCopyCalls(TestExecutionTier execution_tier, int table_dst,
              isolate);
 
   if (table_dst == table_src) {
-    CheckTableCall(isolate, table, &r, call_index, 0, 1, 2, 3, 4);
+    CheckTableCall(isolate, table, &r, call_index, 0.0, 1.0, 2.0, 3.0, 4.0);
     r.CheckCallViaJS(0, 0, 1, 1);
-    CheckTableCall(isolate, table, &r, call_index, 1, 1, 2, 3, 4);
+    CheckTableCall(isolate, table, &r, call_index, 1.0, 1.0, 2.0, 3.0, 4.0);
     r.CheckCallViaJS(0, 0, 1, 2);
-    CheckTableCall(isolate, table, &r, call_index, 1, 2, 2, 3, 4);
+    CheckTableCall(isolate, table, &r, call_index, 1.0, 2.0, 2.0, 3.0, 4.0);
     r.CheckCallViaJS(0, 3, 0, 2);
-    CheckTableCall(isolate, table, &r, call_index, 1, 2, 2, 1, 2);
+    CheckTableCall(isolate, table, &r, call_index, 1.0, 2.0, 2.0, 1.0, 2.0);
   } else {
-    CheckTableCall(isolate, table, &r, call_index, 0, 1, 2, 3, 4);
+    CheckTableCall(isolate, table, &r, call_index, 0.0, 1.0, 2.0, 3.0, 4.0);
     r.CheckCallViaJS(0, 0, 1, 1);
-    CheckTableCall(isolate, table, &r, call_index, 1, 1, 2, 3, 4);
+    CheckTableCall(isolate, table, &r, call_index, 1.0, 1.0, 2.0, 3.0, 4.0);
     r.CheckCallViaJS(0, 0, 1, 2);
-    CheckTableCall(isolate, table, &r, call_index, 1, 2, 2, 3, 4);
+    CheckTableCall(isolate, table, &r, call_index, 1.0, 2.0, 2.0, 3.0, 4.0);
     r.CheckCallViaJS(0, 3, 0, 2);
-    CheckTableCall(isolate, table, &r, call_index, 1, 2, 2, 0, 1);
+    CheckTableCall(isolate, table, &r, call_index, 1.0, 2.0, 2.0, 0.0, 1.0);
   }
 }
 

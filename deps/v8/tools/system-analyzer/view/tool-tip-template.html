@@ -21,9 +21,14 @@ found in the LICENSE file. -->
     width: auto;
   }
 
+  #content > h3 {
+    margin-top: 0;
+  }
+
   .textContent {
     font-family: monospace;
     white-space: pre;
+    overflow-wrap: anywhere;
     overflow-x: hidden;
     max-width: 500px;
   }
@@ -31,6 +36,7 @@ found in the LICENSE file. -->
   #body {
     display: none;
     position: absolute;
+    z-index: 99999;
     --tip-offset: 10px;
     --tip-width: 10px;
     --tip-height: 15px;
@@ -71,6 +77,16 @@ found in the LICENSE file. -->
   }
   .right > .tip {
     left: var(--tip-offset);
+  }
+  .properties td {
+    vertical-align: top;
+  }
+
+  .properties > tbody > tr > td:nth-child(2n+1):after {
+    content: ':';
+  }
+  .properties {
+    min-width: 350px;
   }
 </style>
 

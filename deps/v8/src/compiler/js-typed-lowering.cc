@@ -7,6 +7,7 @@
 #include "src/ast/modules.h"
 #include "src/builtins/builtins-utils.h"
 #include "src/codegen/code-factory.h"
+#include "src/codegen/interface-descriptors-inl.h"
 #include "src/compiler/access-builder.h"
 #include "src/compiler/allocation-builder.h"
 #include "src/compiler/graph-assembler.h"
@@ -592,8 +593,8 @@ Reduction JSTypedLowering::ReduceJSAdd(Node* node) {
     Node* length =
         graph()->NewNode(simplified()->NumberAdd(), left_length, right_length);
 
-    PropertyCellRef string_length_protector(
-        broker(), factory()->string_length_protector());
+    PropertyCellRef string_length_protector =
+        MakeRef(broker(), factory()->string_length_protector());
     string_length_protector.SerializeAsProtector();
 
     if (string_length_protector.value().AsSmi() ==
@@ -1130,7 +1131,7 @@ Reduction JSTypedLowering::ReduceJSToObject(Node* node) {
   Node* rfalse;
   {
     // Convert {receiver} using the ToObjectStub.
-    Callable callable = Builtins::CallableFor(isolate(), Builtins::kToObject);
+    Callable callable = Builtins::CallableFor(isolate(), Builtin::kToObject);
     auto call_descriptor = Linkage::GetStubCallDescriptor(
         graph()->zone(), callable.descriptor(),
         callable.descriptor().GetStackParameterCount(),
@@ -1171,8 +1172,8 @@ Reduction JSTypedLowering::ReduceJSLoadNamed(Node* node) {
   JSLoadNamedNode n(node);
   Node* receiver = n.object();
   Type receiver_type = NodeProperties::GetType(receiver);
-  NameRef name(broker(), NamedAccessOf(node->op()).name());
-  NameRef length_str(broker(), factory()->length_string());
+  NameRef name = MakeRef(broker(), NamedAccessOf(node->op()).name());
+  NameRef length_str = MakeRef(broker(), factory()->length_string());
   // Optimize "length" property of strings.
   if (name.equals(length_str) && receiver_type.Is(Type::String())) {
     Node* value = graph()->NewNode(simplified()->StringLength(), receiver);
@@ -1541,8 +1542,8 @@ void ReduceBuiltin(JSGraph* jsgraph, Node* node, int builtin_index, int arity,
   DCHECK(Builtins::IsCpp(builtin_index));
   const bool has_builtin_exit_frame = true;
 
-  Node* stub = jsgraph->CEntryStubConstant(1, kDontSaveFPRegs, kArgvOnStack,
-                                           has_builtin_exit_frame);
+  Node* stub = jsgraph->CEntryStubConstant(
+      1, SaveFPRegsMode::kIgnore, ArgvMode::kStack, has_builtin_exit_frame);
   node->ReplaceInput(0, stub);
 
   const int argc = arity + BuiltinArguments::kNumExtraArgsWithReceiver;
@@ -1628,10 +1629,10 @@ Reduction JSTypedLowering::ReduceJSConstruct(Node* node) {
 
     // Patch {node} to an indirect call via the {function}s construct stub.
     bool use_builtin_construct_stub = function.shared().construct_as_builtin();
-    CodeRef code(broker(),
-                 use_builtin_construct_stub
-                     ? BUILTIN_CODE(isolate(), JSBuiltinsConstructStub)
-                     : BUILTIN_CODE(isolate(), JSConstructStubGeneric));
+    CodeRef code = MakeRef(
+        broker(), use_builtin_construct_stub
+                      ? BUILTIN_CODE(isolate(), JSBuiltinsConstructStub)
+                      : BUILTIN_CODE(isolate(), JSConstructStubGeneric));
     STATIC_ASSERT(JSConstructNode::TargetIndex() == 0);
     STATIC_ASSERT(JSConstructNode::NewTargetIndex() == 1);
     node->RemoveInput(n.FeedbackVectorIndex());
@@ -1712,9 +1713,9 @@ Reduction JSTypedLowering::ReduceJSCall(Node* node) {
   } else if (target->opcode() == IrOpcode::kJSCreateClosure) {
     CreateClosureParameters const& ccp =
         JSCreateClosureNode{target}.Parameters();
-    shared = SharedFunctionInfoRef(broker(), ccp.shared_info());
+    shared = MakeRef(broker(), ccp.shared_info());
   } else if (target->opcode() == IrOpcode::kCheckClosure) {
-    FeedbackCellRef cell(broker(), FeedbackCellOf(target->op()));
+    FeedbackCellRef cell = MakeRef(broker(), FeedbackCellOf(target->op()));
     base::Optional<FeedbackVectorRef> feedback_vector = cell.value();
     if (feedback_vector.has_value()) {
       shared = feedback_vector->shared_function_info();
@@ -1723,6 +1724,9 @@ Reduction JSTypedLowering::ReduceJSCall(Node* node) {
 
   if (shared.has_value()) {
     // Do not inline the call if we need to check whether to break at entry.
+    // If this state changes during background compilation, the compilation
+    // job will be aborted from the main thread (see
+    // Debug::PrepareFunctionForDebugExecution()).
     if (shared->HasBreakInfo()) return NoChange();
 
     // Class constructors are callable, but [[Call]] will raise an exception.
@@ -1784,7 +1788,7 @@ Reduction JSTypedLowering::ReduceJSCall(Node* node) {
       DCHECK(Builtins::HasJSLinkage(shared->builtin_id()));
       // Patch {node} to a direct code object call.
       Callable callable = Builtins::CallableFor(
-          isolate(), static_cast<Builtins::Name>(shared->builtin_id()));
+          isolate(), static_cast<Builtin>(shared->builtin_id()));
       CallDescriptor::Flags flags = CallDescriptor::kNeedsFrameState;
 
       const CallInterfaceDescriptor& descriptor = callable.descriptor();
@@ -1909,7 +1913,7 @@ Reduction JSTypedLowering::ReduceJSForInNext(Node* node) {
         // Filter the {key} to check if it's still a valid property of the
         // {receiver} (does the ToName conversion implicitly).
         Callable const callable =
-            Builtins::CallableFor(isolate(), Builtins::kForInFilter);
+            Builtins::CallableFor(isolate(), Builtin::kForInFilter);
         auto call_descriptor = Linkage::GetStubCallDescriptor(
             graph()->zone(), callable.descriptor(),
             callable.descriptor().GetStackParameterCount(),

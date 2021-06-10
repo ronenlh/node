@@ -28,9 +28,11 @@ class WasmValue;
 
 #include "torque-generated/src/debug/debug-wasm-objects-tq.inc"
 
+class ArrayList;
 class WasmFrame;
 class WasmInstanceObject;
 class WasmModuleObject;
+class WasmTableObject;
 
 class WasmValueObject : public JSObject {
  public:
@@ -68,10 +70,20 @@ Handle<JSObject> GetWasmDebugProxy(WasmFrame* frame);
 
 std::unique_ptr<debug::ScopeIterator> GetWasmScopeIterator(WasmFrame* frame);
 
-Handle<JSArray> GetWasmInstanceObjectInternalProperties(
+Handle<String> GetWasmFunctionDebugName(Isolate* isolate,
+                                        Handle<WasmInstanceObject> instance,
+                                        uint32_t func_index);
+
+Handle<ArrayList> AddWasmInstanceObjectInternalProperties(
+    Isolate* isolate, Handle<ArrayList> result,
     Handle<WasmInstanceObject> instance);
-Handle<JSArray> GetWasmModuleObjectInternalProperties(
+
+Handle<ArrayList> AddWasmModuleObjectInternalProperties(
+    Isolate* isolate, Handle<ArrayList> result,
     Handle<WasmModuleObject> module_object);
+
+Handle<ArrayList> AddWasmTableObjectInternalProperties(
+    Isolate* isolate, Handle<ArrayList> result, Handle<WasmTableObject> table);
 
 }  // namespace internal
 }  // namespace v8

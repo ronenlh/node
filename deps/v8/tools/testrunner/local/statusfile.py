@@ -46,6 +46,7 @@ FAIL_OK = "FAIL_OK"
 FAIL_SLOPPY = "FAIL_SLOPPY"
 
 # Modifiers
+HEAVY = "HEAVY"
 SKIP = "SKIP"
 SLOW = "SLOW"
 NO_VARIANTS = "NO_VARIANTS"
@@ -54,8 +55,8 @@ FAIL_PHASE_ONLY = "FAIL_PHASE_ONLY"
 ALWAYS = "ALWAYS"
 
 KEYWORDS = {}
-for key in [SKIP, FAIL, PASS, CRASH, SLOW, FAIL_OK, NO_VARIANTS, FAIL_SLOPPY,
-            ALWAYS, FAIL_PHASE_ONLY]:
+for key in [SKIP, FAIL, PASS, CRASH, HEAVY, SLOW, FAIL_OK, NO_VARIANTS,
+            FAIL_SLOPPY, ALWAYS, FAIL_PHASE_ONLY]:
   KEYWORDS[key] = key
 
 # Support arches, modes to be written as keywords instead of strings.
@@ -282,7 +283,7 @@ def ReadStatusFile(content, variables):
 
 def _ReadSection(section, variables, rules, prefix_rules):
   assert type(section) == dict
-  for rule, outcome_list in section.iteritems():
+  for rule, outcome_list in section.items():
     assert type(rule) == str
 
     if rule[-1] == '*':

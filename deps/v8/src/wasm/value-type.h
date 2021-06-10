@@ -50,6 +50,8 @@ class Simd128;
   V(OptRef, kTaggedSizeLog2, OptRef, AnyTagged, 'n', "ref null")            \
   V(Bottom, -1, Void, None, '*', "<bot>")
 
+constexpr int kMaxValueTypeSize = 16;  // bytes
+
 // Represents a WebAssembly heap type, as per the typed-funcref and gc
 // proposals.
 // The underlying Representation enumeration encodes heap types as follows:
@@ -94,7 +96,7 @@ class HeapType {
   }
 
   explicit constexpr HeapType(Representation repr) : representation_(repr) {
-    CONSTEXPR_DCHECK(is_bottom() || is_valid());
+    DCHECK(is_bottom() || is_valid());
   }
   explicit constexpr HeapType(uint32_t repr)
       : HeapType(static_cast<Representation>(repr)) {}
@@ -116,7 +118,7 @@ class HeapType {
 
   constexpr Representation representation() const { return representation_; }
   constexpr uint32_t ref_index() const {
-    CONSTEXPR_DCHECK(is_index());
+    DCHECK(is_index());
     return representation_;
   }
 
@@ -184,6 +186,18 @@ enum ValueKind : uint8_t {
 #undef DEF_ENUM
 };
 
+constexpr bool is_numeric(ValueKind kind) {
+  switch (kind) {
+#define NUMERIC_CASE(kind, ...) \
+  case k##kind:                 \
+    return true;
+    FOREACH_NUMERIC_VALUE_TYPE(NUMERIC_CASE)
+#undef NUMERIC_CASE
+    default:
+      return false;
+  }
+}
+
 constexpr bool is_reference(ValueKind kind) {
   return kind == kRef || kind == kOptRef || kind == kRtt ||
          kind == kRttWithDepth;
@@ -201,7 +215,7 @@ constexpr int element_size_log2(ValueKind kind) {
   };
 
   int size_log_2 = kElementSizeLog2[kind];
-  CONSTEXPR_DCHECK(size_log_2 >= 0);
+  DCHECK_LE(0, size_log_2);
   return size_log_2;
 }
 
@@ -214,7 +228,7 @@ constexpr int element_size_bytes(ValueKind kind) {
   };
 
   int size = kElementSize[kind];
-  CONSTEXPR_DCHECK(size > 0);
+  DCHECK_LT(0, size);
   return size;
 }
 
@@ -240,7 +254,7 @@ constexpr const char* name(ValueKind kind) {
 }
 
 constexpr MachineType machine_type(ValueKind kind) {
-  CONSTEXPR_DCHECK(kBottom != kind);
+  DCHECK_NE(kBottom, kind);
 
   constexpr MachineType kMachineType[] = {
 #define MACH_TYPE(kind, log2Size, code, machineType, ...) \
@@ -262,7 +276,7 @@ constexpr bool is_rtt(ValueKind kind) {
 }
 
 constexpr bool is_defaultable(ValueKind kind) {
-  CONSTEXPR_DCHECK(kind != kBottom && kind != kVoid);
+  DCHECK(kind != kBottom && kind != kVoid);
   return kind != kRef && !is_rtt(kind);
 }
 
@@ -277,11 +291,11 @@ class ValueType {
   /******************************* Constructors *******************************/
   constexpr ValueType() : bit_field_(KindField::encode(kVoid)) {}
   static constexpr ValueType Primitive(ValueKind kind) {
-    CONSTEXPR_DCHECK(kind == kBottom || kind <= kI16);
+    DCHECK(kind == kBottom || kind <= kI16);
     return ValueType(KindField::encode(kind));
   }
   static constexpr ValueType Ref(uint32_t heap_type, Nullability nullability) {
-    CONSTEXPR_DCHECK(HeapType(heap_type).is_valid());
+    DCHECK(HeapType(heap_type).is_valid());
     return ValueType(
         KindField::encode(nullability == kNullable ? kOptRef : kRef) |
         HeapTypeField::encode(heap_type));
@@ -291,14 +305,14 @@ class ValueType {
   }
 
   static constexpr ValueType Rtt(uint32_t type_index) {
-    CONSTEXPR_DCHECK(HeapType(type_index).is_index());
+    DCHECK(HeapType(type_index).is_index());
     return ValueType(KindField::encode(kRtt) |
                      HeapTypeField::encode(type_index));
   }
 
   static constexpr ValueType Rtt(uint32_t type_index,
                                  uint8_t inheritance_depth) {
-    CONSTEXPR_DCHECK(HeapType(type_index).is_index());
+    DCHECK(HeapType(type_index).is_index());
     return ValueType(KindField::encode(kRttWithDepth) |
                      HeapTypeField::encode(type_index) |
                      DepthField::encode(inheritance_depth));
@@ -310,6 +324,8 @@ class ValueType {
   }
 
   /******************************** Type checks *******************************/
+  constexpr bool is_numeric() const { return wasm::is_numeric(kind()); }
+
   constexpr bool is_reference() const { return wasm::is_reference(kind()); }
 
   constexpr bool is_object_reference() const {
@@ -340,27 +356,34 @@ class ValueType {
     return is_packed() ? Primitive(kI32) : *this;
   }
 
+  // Returns the version of this type that does not allow null values. Handles
+  // bottom.
+  constexpr ValueType AsNonNull() const {
+    DCHECK(is_object_reference() || is_bottom());
+    return is_nullable() ? Ref(heap_type(), kNonNullable) : *this;
+  }
+
   /***************************** Field Accessors ******************************/
   constexpr ValueKind kind() const { return KindField::decode(bit_field_); }
   constexpr HeapType::Representation heap_representation() const {
-    CONSTEXPR_DCHECK(is_object_reference());
+    DCHECK(is_object_reference());
     return static_cast<HeapType::Representation>(
         HeapTypeField::decode(bit_field_));
   }
   constexpr HeapType heap_type() const {
-    CONSTEXPR_DCHECK(is_object_reference());
+    DCHECK(is_object_reference());
     return HeapType(heap_representation());
   }
   constexpr uint8_t depth() const {
-    CONSTEXPR_DCHECK(has_depth());
+    DCHECK(has_depth());
     return DepthField::decode(bit_field_);
   }
   constexpr uint32_t ref_index() const {
-    CONSTEXPR_DCHECK(has_index());
+    DCHECK(has_index());
     return HeapTypeField::decode(bit_field_);
   }
   constexpr Nullability nullability() const {
-    CONSTEXPR_DCHECK(is_object_reference());
+    DCHECK(is_object_reference());
     return kind() == kOptRef ? kNullable : kNonNullable;
   }
 
@@ -426,7 +449,7 @@ class ValueType {
   // (e.g., Ref(HeapType::kFunc, kNullable).value_type_code will return
   // kFuncrefCode and not kOptRefCode).
   constexpr ValueTypeCode value_type_code() const {
-    CONSTEXPR_DCHECK(kind() != kBottom);
+    DCHECK_NE(kBottom, kind());
     switch (kind()) {
       case kOptRef:
         switch (heap_representation()) {

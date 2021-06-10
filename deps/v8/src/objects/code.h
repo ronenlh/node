@@ -298,7 +298,7 @@ class Code : public HeapObject {
 
   // [builtin_index]: For builtins, tells which builtin index the code object
   // has. The builtin index is a non-negative integer for builtins, and
-  // Builtins::kNoBuiltinId (-1) otherwise.
+  // Builtin::kNoBuiltinId (-1) otherwise.
   inline int builtin_index() const;
   inline void set_builtin_index(int id);
   inline bool is_builtin() const;
@@ -447,7 +447,6 @@ class Code : public HeapObject {
   inline HandlerTable::CatchPrediction GetBuiltinCatchPrediction();
 
   bool IsIsolateIndependent(Isolate* isolate);
-  bool IsNativeContextIndependent(Isolate* isolate);
 
   inline bool CanContainWeakObjects();
 
@@ -515,7 +514,7 @@ class Code : public HeapObject {
 #elif V8_TARGET_ARCH_S390X
   static constexpr int kHeaderPaddingSize = COMPRESS_POINTERS_BOOL ? 12 : 24;
 #elif V8_TARGET_ARCH_RISCV64
-  static constexpr int kHeaderPaddingSize = 24;
+  static constexpr int kHeaderPaddingSize = (COMPRESS_POINTERS_BOOL ? 12 : 24);
 #else
 #error Unknown architecture.
 #endif
@@ -982,7 +981,7 @@ class DeoptimizationData : public FixedArray {
   DECL_CAST(DeoptimizationData)
 
 #ifdef ENABLE_DISASSEMBLER
-  void DeoptimizationDataPrint(std::ostream& os);  // NOLINT
+  void DeoptimizationDataPrint(std::ostream& os);
 #endif
 
  private:

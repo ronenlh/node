@@ -27,7 +27,7 @@
 
 #include <stdlib.h>
 
-#include <iostream>  // NOLINT(readability/streams)
+#include <iostream>
 
 #include "src/base/utils/random-number-generator.h"
 #include "src/codegen/assembler-inl.h"
@@ -128,7 +128,7 @@ TEST(LoadConstants) {
       // Load constant.
       __ li(a5, Operand(refConstants[i]));
       __ Sd(a5, MemOperand(a4));
-      __ Add64(a4, a4, Operand(kPointerSize));
+      __ Add64(a4, a4, Operand(kSystemPointerSize));
     }
   };
   auto f = AssembleCode<FV>(fn);
@@ -1413,17 +1413,17 @@ TEST(Dpopcnt) {
       __ li(a3, Operand(in[i]));
       __ Popcnt64(a5, a3);
       __ Sd(a5, MemOperand(a4));
-      __ Add64(a4, a4, Operand(kPointerSize));
+      __ Add64(a4, a4, Operand(kSystemPointerSize));
     }
     __ li(a3, Operand(in[7]));
     __ Popcnt64(a5, a3);
     __ Sd(a5, MemOperand(a4));
-    __ Add64(a4, a4, Operand(kPointerSize));
+    __ Add64(a4, a4, Operand(kSystemPointerSize));
 
     __ li(a3, Operand(in[8]));
     __ Popcnt64(a5, a3);
     __ Sd(a5, MemOperand(a4));
-    __ Add64(a4, a4, Operand(kPointerSize));
+    __ Add64(a4, a4, Operand(kSystemPointerSize));
   };
   auto f = AssembleCode<FV>(fn);
 
@@ -1464,18 +1464,18 @@ TEST(Popcnt) {
       __ li(a3, Operand(in[i]));
       __ Popcnt32(a5, a3);
       __ Sd(a5, MemOperand(a4));
-      __ Add64(a4, a4, Operand(kPointerSize));
+      __ Add64(a4, a4, Operand(kSystemPointerSize));
     }
 
     __ li(a3, Operand(in[6]));
     __ Popcnt64(a5, a3);
     __ Sd(a5, MemOperand(a4));
-    __ Add64(a4, a4, Operand(kPointerSize));
+    __ Add64(a4, a4, Operand(kSystemPointerSize));
 
     __ li(a3, Operand(in[7]));
     __ Popcnt64(a5, a3);
     __ Sd(a5, MemOperand(a4));
-    __ Add64(a4, a4, Operand(kPointerSize));
+    __ Add64(a4, a4, Operand(kSystemPointerSize));
   };
   auto f = AssembleCode<FV>(fn);
 
@@ -1532,14 +1532,14 @@ TEST(DeoptExitSizeIsFixed) {
     Label before_exit;
     masm.bind(&before_exit);
     if (kind == DeoptimizeKind::kEagerWithResume) {
-      Builtins::Name target = Deoptimizer::GetDeoptWithResumeBuiltin(
+      Builtin target = Deoptimizer::GetDeoptWithResumeBuiltin(
           DeoptimizeReason::kDynamicCheckMaps);
       masm.CallForDeoptimization(target, 42, &before_exit, kind, &before_exit,
                                  nullptr);
       CHECK_EQ(masm.SizeOfCodeGeneratedSince(&before_exit),
                Deoptimizer::kEagerWithResumeBeforeArgsSize);
     } else {
-      Builtins::Name target = Deoptimizer::GetDeoptimizationEntry(kind);
+      Builtin target = Deoptimizer::GetDeoptimizationEntry(kind);
       masm.CallForDeoptimization(target, 42, &before_exit, kind, &before_exit,
                                  nullptr);
       CHECK_EQ(masm.SizeOfCodeGeneratedSince(&before_exit),
@@ -1548,6 +1548,21 @@ TEST(DeoptExitSizeIsFixed) {
                    : Deoptimizer::kNonLazyDeoptExitSize);
     }
   }
+}
+
+TEST(AddWithImm) {
+  CcTest::InitializeVM();
+#define Test(Op, Input, Expected)                                       \
+  {                                                                     \
+    auto fn = [](MacroAssembler& masm) { __ Op(a0, zero_reg, Input); }; \
+    CHECK_EQ(static_cast<int64_t>(Expected), GenAndRunTest(fn));        \
+  }
+
+  Test(Add64, 4095, 4095);
+  Test(Add32, 4095, 4095);
+  Test(Sub64, 4095, -4095);
+  Test(Sub32, 4095, -4095);
+#undef Test
 }
 
 #undef __

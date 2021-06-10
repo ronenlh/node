@@ -740,11 +740,11 @@ class V8_NODISCARD BytecodeGenerator::TestResultScope final
 // Used to build a list of toplevel declaration data.
 class BytecodeGenerator::TopLevelDeclarationsBuilder final : public ZoneObject {
  public:
-  template <typename LocalIsolate>
+  template <typename IsolateT>
   Handle<FixedArray> AllocateDeclarations(UnoptimizedCompilationInfo* info,
                                           BytecodeGenerator* generator,
                                           Handle<Script> script,
-                                          LocalIsolate* isolate) {
+                                          IsolateT* isolate) {
     DCHECK(has_constant_pool_entry_);
 
     Handle<FixedArray> data =
@@ -1187,14 +1187,14 @@ using NullContextScopeFor = typename NullContextScopeHelper<Isolate>::Type;
 
 }  // namespace
 
-template <typename LocalIsolate>
+template <typename IsolateT>
 Handle<BytecodeArray> BytecodeGenerator::FinalizeBytecode(
-    LocalIsolate* isolate, Handle<Script> script) {
+    IsolateT* isolate, Handle<Script> script) {
   DCHECK_EQ(ThreadId::Current(), isolate->thread_id());
 #ifdef DEBUG
   // Unoptimized compilation should be context-independent. Verify that we don't
   // access the native context by nulling it out during finalization.
-  NullContextScopeFor<LocalIsolate> null_context_scope(isolate);
+  NullContextScopeFor<IsolateT> null_context_scope(isolate);
 #endif
 
   AllocateDeferredConstants(isolate, script);
@@ -1225,14 +1225,14 @@ template Handle<BytecodeArray> BytecodeGenerator::FinalizeBytecode(
 template Handle<BytecodeArray> BytecodeGenerator::FinalizeBytecode(
     LocalIsolate* isolate, Handle<Script> script);
 
-template <typename LocalIsolate>
+template <typename IsolateT>
 Handle<ByteArray> BytecodeGenerator::FinalizeSourcePositionTable(
-    LocalIsolate* isolate) {
+    IsolateT* isolate) {
   DCHECK_EQ(ThreadId::Current(), isolate->thread_id());
 #ifdef DEBUG
   // Unoptimized compilation should be context-independent. Verify that we don't
   // access the native context by nulling it out during finalization.
-  NullContextScopeFor<LocalIsolate> null_context_scope(isolate);
+  NullContextScopeFor<IsolateT> null_context_scope(isolate);
 #endif
 
   Handle<ByteArray> source_position_table =
@@ -1257,8 +1257,8 @@ int BytecodeGenerator::CheckBytecodeMatches(BytecodeArray bytecode) {
 }
 #endif
 
-template <typename LocalIsolate>
-void BytecodeGenerator::AllocateDeferredConstants(LocalIsolate* isolate,
+template <typename IsolateT>
+void BytecodeGenerator::AllocateDeferredConstants(IsolateT* isolate,
                                                   Handle<Script> script) {
   if (top_level_builder()->has_top_level_declaration()) {
     // Build global declaration pair array.
@@ -2236,15 +2236,6 @@ void BytecodeGenerator::AddToEagerLiteralsIfEager(FunctionLiteral* literal) {
   }
 }
 
-bool BytecodeGenerator::ShouldOptimizeAsOneShot() const {
-  if (!FLAG_enable_one_shot_optimization) return false;
-
-  if (loop_depth_ > 0) return false;
-
-  return info()->literal()->is_toplevel() ||
-         info()->literal()->is_oneshot_iife();
-}
-
 void BytecodeGenerator::BuildClassLiteral(ClassLiteral* expr, Register name) {
   size_t class_boilerplate_entry =
       builder()->AllocateDeferredConstantPoolEntry();
@@ -2678,25 +2669,13 @@ void BytecodeGenerator::VisitRegExpLiteral(RegExpLiteral* expr) {
 
 void BytecodeGenerator::BuildCreateObjectLiteral(Register literal,
                                                  uint8_t flags, size_t entry) {
-  if (ShouldOptimizeAsOneShot()) {
-    RegisterList args = register_allocator()->NewRegisterList(2);
-    builder()
-        ->LoadConstantPoolEntry(entry)
-        .StoreAccumulatorInRegister(args[0])
-        .LoadLiteral(Smi::FromInt(flags))
-        .StoreAccumulatorInRegister(args[1])
-        .CallRuntime(Runtime::kCreateObjectLiteralWithoutAllocationSite, args)
-        .StoreAccumulatorInRegister(literal);
-
-  } else {
-    // TODO(cbruni): Directly generate runtime call for literals we cannot
-    // optimize once the CreateShallowObjectLiteral stub is in sync with the TF
-    // optimizations.
-    int literal_index = feedback_index(feedback_spec()->AddLiteralSlot());
-    builder()
-        ->CreateObjectLiteral(entry, literal_index, flags)
-        .StoreAccumulatorInRegister(literal);
-  }
+  // TODO(cbruni): Directly generate runtime call for literals we cannot
+  // optimize once the CreateShallowObjectLiteral stub is in sync with the TF
+  // optimizations.
+  int literal_index = feedback_index(feedback_spec()->AddLiteralSlot());
+  builder()
+      ->CreateObjectLiteral(entry, literal_index, flags)
+      .StoreAccumulatorInRegister(literal);
 }
 
 void BytecodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
@@ -3053,30 +3032,15 @@ void BytecodeGenerator::BuildCreateArrayLiteral(
     // and one-shot optimization.
     uint8_t flags = CreateArrayLiteralFlags::Encode(
         expr->IsFastCloningSupported(), expr->ComputeFlags());
-    bool optimize_as_one_shot = ShouldOptimizeAsOneShot();
-    size_t entry;
-    if (is_empty && optimize_as_one_shot) {
-      entry = builder()->EmptyArrayBoilerplateDescriptionConstantPoolEntry();
-    } else if (!is_empty) {
-      entry = builder()->AllocateDeferredConstantPoolEntry();
-      array_literals_.push_back(std::make_pair(expr, entry));
-    }
-
-    if (optimize_as_one_shot) {
-      RegisterList args = register_allocator()->NewRegisterList(2);
-      builder()
-          ->LoadConstantPoolEntry(entry)
-          .StoreAccumulatorInRegister(args[0])
-          .LoadLiteral(Smi::FromInt(flags))
-          .StoreAccumulatorInRegister(args[1])
-          .CallRuntime(Runtime::kCreateArrayLiteralWithoutAllocationSite, args);
-    } else if (is_empty) {
+    if (is_empty) {
       // Empty array literal fast-path.
       int literal_index = feedback_index(feedback_spec()->AddLiteralSlot());
       DCHECK(expr->IsFastCloningSupported());
       builder()->CreateEmptyArrayLiteral(literal_index);
     } else {
       // Create array literal from boilerplate.
+      size_t entry = builder()->AllocateDeferredConstantPoolEntry();
+      array_literals_.push_back(std::make_pair(expr, entry));
       int literal_index = feedback_index(feedback_spec()->AddLiteralSlot());
       builder()->CreateArrayLiteral(entry, literal_index, flags);
     }
@@ -3289,7 +3253,7 @@ void BytecodeGenerator::BuildVariableLoad(Variable* variable,
       break;
     }
     case VariableLocation::REPL_GLOBAL: {
-      DCHECK(variable->IsReplGlobalLet());
+      DCHECK(variable->IsReplGlobal());
       FeedbackSlot slot = GetCachedLoadGlobalICSlot(typeof_mode, variable);
       builder()->LoadGlobal(variable->raw_name(), feedback_index(slot),
                             typeof_mode);
@@ -3478,7 +3442,8 @@ void BytecodeGenerator::BuildVariableAssignment(
       break;
     }
     case VariableLocation::REPL_GLOBAL: {
-      // A let declaration like 'let x = 7' is effectively translated to:
+      // A let or const declaration like 'let x = 7' is effectively translated
+      // to:
       //   <top of the script>:
       //     ScriptContext.x = TheHole;
       //   ...
@@ -3488,19 +3453,23 @@ void BytecodeGenerator::BuildVariableAssignment(
       // The ScriptContext slot for 'x' that we store to here is not
       // necessarily the ScriptContext of this script, but rather the
       // first ScriptContext that has a slot for name 'x'.
-      DCHECK(variable->IsReplGlobalLet());
+      DCHECK(variable->IsReplGlobal());
       if (op == Token::INIT) {
         RegisterList store_args = register_allocator()->NewRegisterList(2);
         builder()
             ->StoreAccumulatorInRegister(store_args[1])
             .LoadLiteral(variable->raw_name())
             .StoreAccumulatorInRegister(store_args[0]);
-        builder()->CallRuntime(Runtime::kStoreGlobalNoHoleCheckForReplLet,
-                               store_args);
+        builder()->CallRuntime(
+            Runtime::kStoreGlobalNoHoleCheckForReplLetOrConst, store_args);
       } else {
-        FeedbackSlot slot =
-            GetCachedStoreGlobalICSlot(language_mode(), variable);
-        builder()->StoreGlobal(variable->raw_name(), feedback_index(slot));
+        if (mode == VariableMode::kConst) {
+          builder()->CallRuntime(Runtime::kThrowConstAssignError);
+        } else {
+          FeedbackSlot slot =
+              GetCachedStoreGlobalICSlot(language_mode(), variable);
+          builder()->StoreGlobal(variable->raw_name(), feedback_index(slot));
+        }
       }
       break;
     }
@@ -3510,12 +3479,8 @@ void BytecodeGenerator::BuildVariableAssignment(
 void BytecodeGenerator::BuildLoadNamedProperty(const Expression* object_expr,
                                                Register object,
                                                const AstRawString* name) {
-  if (ShouldOptimizeAsOneShot()) {
-    builder()->LoadNamedPropertyNoFeedback(object, name);
-  } else {
-    FeedbackSlot slot = GetCachedLoadICSlot(object_expr, name);
-    builder()->LoadNamedProperty(object, name, feedback_index(slot));
-  }
+  FeedbackSlot slot = GetCachedLoadICSlot(object_expr, name);
+  builder()->LoadNamedProperty(object, name, feedback_index(slot));
 }
 
 void BytecodeGenerator::BuildStoreNamedProperty(const Expression* object_expr,
@@ -3527,13 +3492,9 @@ void BytecodeGenerator::BuildStoreNamedProperty(const Expression* object_expr,
     builder()->StoreAccumulatorInRegister(value);
   }
 
-  if (ShouldOptimizeAsOneShot()) {
-    builder()->StoreNamedPropertyNoFeedback(object, name, language_mode());
-  } else {
-    FeedbackSlot slot = GetCachedStoreICSlot(object_expr, name);
-    builder()->StoreNamedProperty(object, name, feedback_index(slot),
-                                  language_mode());
-  }
+  FeedbackSlot slot = GetCachedStoreICSlot(object_expr, name);
+  builder()->StoreNamedProperty(object, name, feedback_index(slot),
+                                language_mode());
 
   if (!execution_result()->IsEffect()) {
     builder()->LoadAccumulatorWithRegister(value);
@@ -5054,7 +5015,6 @@ void BytecodeGenerator::VisitCall(Call* expr) {
   Register callee = register_allocator()->GrowRegisterList(&args);
 
   bool implicit_undefined_receiver = false;
-  bool optimize_as_one_shot = ShouldOptimizeAsOneShot();
 
   // TODO(petermarshall): We have a lot of call bytecodes that are very similar,
   // see if we can reduce the number by adding a separate argument which
@@ -5073,7 +5033,7 @@ void BytecodeGenerator::VisitCall(Call* expr) {
     }
     case Call::GLOBAL_CALL: {
       // Receiver is undefined for global calls.
-      if (spread_position == Call::kNoSpread && !optimize_as_one_shot) {
+      if (spread_position == Call::kNoSpread) {
         implicit_undefined_receiver = true;
       } else {
         // TODO(leszeks): There's no special bytecode for tail calls or spread
@@ -5109,7 +5069,7 @@ void BytecodeGenerator::VisitCall(Call* expr) {
     }
     case Call::OTHER_CALL: {
       // Receiver is undefined for other calls.
-      if (spread_position == Call::kNoSpread && !optimize_as_one_shot) {
+      if (spread_position == Call::kNoSpread) {
         implicit_undefined_receiver = true;
       } else {
         // TODO(leszeks): There's no special bytecode for tail calls or spread
@@ -5225,9 +5185,6 @@ void BytecodeGenerator::VisitCall(Call* expr) {
                               feedback_index(feedback_spec()->AddCallICSlot()));
   } else if (spread_position == Call::kHasNonFinalSpread) {
     builder()->CallJSRuntime(Context::REFLECT_APPLY_INDEX, args);
-  } else if (optimize_as_one_shot) {
-    DCHECK(!implicit_undefined_receiver);
-    builder()->CallNoFeedback(callee, args);
   } else if (call_type == Call::NAMED_PROPERTY_CALL ||
              call_type == Call::KEYED_PROPERTY_CALL) {
     DCHECK(!implicit_undefined_receiver);
@@ -5420,7 +5377,7 @@ void BytecodeGenerator::VisitForTypeOfValue(Expression* expr) {
     // perform a non-contextual load in case the operand is a variable proxy.
     VariableProxy* proxy = expr->AsVariableProxy();
     BuildVariableLoadForAccumulatorValue(proxy->var(), proxy->hole_check_mode(),
-                                         INSIDE_TYPEOF);
+                                         TypeofMode::kInside);
   } else {
     VisitForAccumulatorValue(expr);
   }
@@ -6850,7 +6807,7 @@ int BytecodeGenerator::feedback_index(FeedbackSlot slot) const {
 FeedbackSlot BytecodeGenerator::GetCachedLoadGlobalICSlot(
     TypeofMode typeof_mode, Variable* variable) {
   FeedbackSlotCache::SlotKind slot_kind =
-      typeof_mode == INSIDE_TYPEOF
+      typeof_mode == TypeofMode::kInside
           ? FeedbackSlotCache::SlotKind::kLoadGlobalInsideTypeof
           : FeedbackSlotCache::SlotKind::kLoadGlobalNotInsideTypeof;
   FeedbackSlot slot(feedback_slot_cache()->Get(slot_kind, variable));

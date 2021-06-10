@@ -1115,9 +1115,9 @@ void TestReconfigureDataFieldAttribute_GeneralizeField(
 
   // Reconfigure attributes of property |kSplitProp| of |map2| to NONE, which
   // should generalize representations in |map1|.
-  Handle<Map> new_map =
-      Map::ReconfigureExistingProperty(isolate, map2, InternalIndex(kSplitProp),
-                                       kData, NONE, PropertyConstness::kConst);
+  Handle<Map> new_map = MapUpdater::ReconfigureExistingProperty(
+      isolate, map2, InternalIndex(kSplitProp), kData, NONE,
+      PropertyConstness::kConst);
 
   // |map2| should be mosly left unchanged but marked unstable and if the
   // source property was constant it should also be transitioned to kMutable.
@@ -1503,9 +1503,9 @@ static void TestReconfigureProperty_CustomPropertyAfterTargetMap(
 
   // Reconfigure attributes of property |kSplitProp| of |map2| to NONE, which
   // should generalize representations in |map1|.
-  Handle<Map> new_map =
-      Map::ReconfigureExistingProperty(isolate, map2, InternalIndex(kSplitProp),
-                                       kData, NONE, PropertyConstness::kConst);
+  Handle<Map> new_map = MapUpdater::ReconfigureExistingProperty(
+      isolate, map2, InternalIndex(kSplitProp), kData, NONE,
+      PropertyConstness::kConst);
 
   // |map2| should be left unchanged but marked unstable.
   CHECK(!map2->is_stable());
@@ -1562,7 +1562,7 @@ TEST(ReconfigureDataFieldAttribute_DataConstantToDataFieldAfterTargetMap) {
       Handle<Map> sloppy_map =
           Map::CopyInitialMap(isolate, isolate->sloppy_function_map());
       Handle<SharedFunctionInfo> info =
-          factory->NewSharedFunctionInfoForBuiltin(name, Builtins::kIllegal);
+          factory->NewSharedFunctionInfoForBuiltin(name, Builtin::kIllegal);
       function_type_ = FieldType::Class(sloppy_map, isolate);
       CHECK(sloppy_map->is_stable());
 
@@ -2551,9 +2551,9 @@ struct ReconfigureAsDataPropertyOperator {
     expectations->SetDataField(descriptor_.as_int(),
                                PropertyConstness::kMutable, representation_,
                                heap_type_);
-    return Map::ReconfigureExistingProperty(isolate, map, descriptor_, kData,
-                                            attributes_,
-                                            PropertyConstness::kConst);
+    return MapUpdater::ReconfigureExistingProperty(isolate, map, descriptor_,
+                                                   kData, attributes_,
+                                                   PropertyConstness::kConst);
   }
 };
 
@@ -2569,9 +2569,9 @@ struct ReconfigureAsAccessorPropertyOperator {
   Handle<Map> DoTransition(Isolate* isolate, Expectations* expectations,
                            Handle<Map> map) {
     expectations->SetAccessorField(descriptor_.as_int());
-    return Map::ReconfigureExistingProperty(isolate, map, descriptor_,
-                                            kAccessor, attributes_,
-                                            PropertyConstness::kConst);
+    return MapUpdater::ReconfigureExistingProperty(isolate, map, descriptor_,
+                                                   kAccessor, attributes_,
+                                                   PropertyConstness::kConst);
   }
 };
 
@@ -2722,7 +2722,7 @@ TEST(TransitionDataConstantToAnotherDataConstant) {
   Handle<Map> sloppy_map =
       Map::CopyInitialMap(isolate, isolate->sloppy_function_map());
   Handle<SharedFunctionInfo> info =
-      factory->NewSharedFunctionInfoForBuiltin(name, Builtins::kIllegal);
+      factory->NewSharedFunctionInfoForBuiltin(name, Builtin::kIllegal);
   CHECK(sloppy_map->is_stable());
 
   Handle<JSFunction> js_func1 =
@@ -3015,10 +3015,11 @@ TEST(NormalizeToMigrationTarget) {
 }
 
 TEST(RepresentationPredicatesAreInSync) {
-  STATIC_ASSERT(Representation::kNumRepresentations == 5);
+  STATIC_ASSERT(Representation::kNumRepresentations == 6);
   static Representation reps[] = {
-      Representation::None(), Representation::Smi(), Representation::Double(),
-      Representation::HeapObject(), Representation::Tagged()};
+      Representation::None(),   Representation::Smi(),
+      Representation::Double(), Representation::HeapObject(),
+      Representation::Tagged(), Representation::WasmValue()};
 
   for (Representation from : reps) {
     Representation most_generic_rep = from.MostGenericInPlaceChange();

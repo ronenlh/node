@@ -104,7 +104,7 @@ class JSCallReducerTest : public TypedGraphTest {
     Handle<FeedbackMetadata> metadata = FeedbackMetadata::New(isolate(), &spec);
     Handle<SharedFunctionInfo> shared =
         isolate()->factory()->NewSharedFunctionInfoForBuiltin(
-            isolate()->factory()->empty_string(), Builtins::kIllegal);
+            isolate()->factory()->empty_string(), Builtin::kIllegal);
     // Set the raw feedback metadata to circumvent checks that we are not
     // overwriting existing metadata.
     shared->set_raw_outer_scope_info_or_feedback_metadata(*metadata);
@@ -117,7 +117,7 @@ class JSCallReducerTest : public TypedGraphTest {
     return javascript()->Call(JSCallNode::ArityForArgc(arity), CallFrequency(),
                               feedback, ConvertReceiverMode::kAny,
                               SpeculationMode::kAllowSpeculation,
-                              CallFeedbackRelation::kRelated);
+                              CallFeedbackRelation::kTarget);
   }
 
  private:

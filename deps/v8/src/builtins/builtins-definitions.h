@@ -33,8 +33,18 @@ namespace internal {
 
 #define BUILTIN_LIST_BASE(CPP, TFJ, TFC, TFS, TFH, ASM)                        \
   /* GC write barrirer */                                                      \
-  TFC(RecordWrite, RecordWrite)                                                \
-  TFC(EphemeronKeyBarrier, EphemeronKeyBarrier)                                \
+  TFC(RecordWriteEmitRememberedSetSaveFP, WriteBarrier)                        \
+  TFC(RecordWriteOmitRememberedSetSaveFP, WriteBarrier)                        \
+  TFC(RecordWriteEmitRememberedSetIgnoreFP, WriteBarrier)                      \
+  TFC(RecordWriteOmitRememberedSetIgnoreFP, WriteBarrier)                      \
+  TFC(EphemeronKeyBarrierSaveFP, WriteBarrier)                                 \
+  TFC(EphemeronKeyBarrierIgnoreFP, WriteBarrier)                               \
+                                                                               \
+  /* TSAN support for tagged stores in generated code.*/                       \
+  IF_TSAN(TFC, TSANRelaxedStore32IgnoreFP, TSANRelaxedStore)                   \
+  IF_TSAN(TFC, TSANRelaxedStore32SaveFP, TSANRelaxedStore)                     \
+  IF_TSAN(TFC, TSANRelaxedStore64IgnoreFP, TSANRelaxedStore)                   \
+  IF_TSAN(TFC, TSANRelaxedStore64SaveFP, TSANRelaxedStore)                     \
                                                                                \
   /* Adaptor for CPP builtin */                                                \
   TFC(AdaptorWithBuiltinExitFrame, CppBuiltinAdaptor)                          \
@@ -50,8 +60,13 @@ namespace internal {
   ASM(Call_ReceiverIsNullOrUndefined, CallTrampoline)                          \
   ASM(Call_ReceiverIsNotNullOrUndefined, CallTrampoline)                       \
   ASM(Call_ReceiverIsAny, CallTrampoline)                                      \
+  TFC(Call_ReceiverIsNullOrUndefined_Baseline_Compact,                         \
+      CallTrampoline_Baseline_Compact)                                         \
   TFC(Call_ReceiverIsNullOrUndefined_Baseline, CallTrampoline_Baseline)        \
+  TFC(Call_ReceiverIsNotNullOrUndefined_Baseline_Compact,                      \
+      CallTrampoline_Baseline_Compact)                                         \
   TFC(Call_ReceiverIsNotNullOrUndefined_Baseline, CallTrampoline_Baseline)     \
+  TFC(Call_ReceiverIsAny_Baseline_Compact, CallTrampoline_Baseline_Compact)    \
   TFC(Call_ReceiverIsAny_Baseline, CallTrampoline_Baseline)                    \
   TFC(Call_ReceiverIsNullOrUndefined_WithFeedback,                             \
       CallTrampoline_WithFeedback)                                             \
@@ -133,13 +148,13 @@ namespace internal {
       InterpreterPushArgsThenConstruct)                                        \
   ASM(InterpreterPushArgsThenConstructWithFinalSpread,                         \
       InterpreterPushArgsThenConstruct)                                        \
-  ASM(InterpreterEnterBytecodeAdvance, Dummy)                                  \
-  ASM(InterpreterEnterBytecodeDispatch, Dummy)                                 \
+  ASM(InterpreterEnterAtBytecode, Dummy)                                       \
+  ASM(InterpreterEnterAtNextBytecode, Dummy)                                   \
   ASM(InterpreterOnStackReplacement, ContextOnly)                              \
                                                                                \
   /* Baseline Compiler */                                                      \
   ASM(BaselineOutOfLinePrologue, BaselineOutOfLinePrologue)                    \
-  ASM(BaselineOnStackReplacement, ContextOnly)                                 \
+  ASM(BaselineOnStackReplacement, Void)                                        \
   ASM(BaselineLeaveFrame, BaselineLeaveFrame)                                  \
   ASM(BaselineEnterAtBytecode, Void)                                           \
   ASM(BaselineEnterAtNextBytecode, Void)                                       \
@@ -200,8 +215,6 @@ namespace internal {
                                                                                \
   /* Debugger */                                                               \
   TFJ(DebugBreakTrampoline, kDontAdaptArgumentsSentinel)                       \
-  ASM(FrameDropperTrampoline, FrameDropperTrampoline)                          \
-  ASM(HandleDebuggerStatement, ContextOnly)                                    \
                                                                                \
   /* Type conversions */                                                       \
   TFC(ToNumber, TypeConversion)                                                \
@@ -707,6 +720,7 @@ namespace internal {
   CPP(ObjectGetOwnPropertyDescriptors)                                         \
   TFJ(ObjectGetOwnPropertyNames, 1, kReceiver, kObject)                        \
   CPP(ObjectGetOwnPropertySymbols)                                             \
+  TFJ(ObjectHasOwn, 2, kReceiver, kObject, kKey)                               \
   TFJ(ObjectIs, 2, kReceiver, kLeft, kRight)                                   \
   CPP(ObjectIsFrozen)                                                          \
   CPP(ObjectIsSealed)                                                          \
@@ -769,6 +783,11 @@ namespace internal {
   TFS(RegExpExecInternal, kRegExp, kString, kLastIndex, kMatchInfo)            \
   ASM(RegExpInterpreterTrampoline, CCall)                                      \
   ASM(RegExpExperimentalTrampoline, CCall)                                     \
+                                                                               \
+  /* ResizableArrayBuffer & GrowableSharedArrayBuffer */                       \
+  CPP(ResizableArrayBufferPrototypeResize)                                     \
+  CPP(GrowableSharedArrayBufferPrototypeGrow)                                  \
+  CPP(GrowableSharedArrayBufferPrototypeGetByteLength)                         \
                                                                                \
   /* Set */                                                                    \
   TFJ(SetConstructor, kDontAdaptArgumentsSentinel)                             \
@@ -863,6 +882,7 @@ namespace internal {
   IF_WASM(ASM, GenericJSToWasmWrapper, Dummy)                                  \
   IF_WASM(ASM, WasmCompileLazy, Dummy)                                         \
   IF_WASM(ASM, WasmDebugBreak, Dummy)                                          \
+  IF_WASM(ASM, WasmOnStackReplace, Dummy)                                      \
   IF_WASM(TFC, WasmFloat32ToNumber, WasmFloat32ToNumber)                       \
   IF_WASM(TFC, WasmFloat64ToNumber, WasmFloat64ToNumber)                       \
   IF_WASM(TFC, WasmI32AtomicWait32, WasmI32AtomicWait32)                       \
@@ -983,6 +1003,7 @@ namespace internal {
   CPP(CollatorPrototypeCompare)                                        \
   /* ecma402 #sec-intl.collator.supportedlocalesof */                  \
   CPP(CollatorSupportedLocalesOf)                                      \
+  /* ecma402 #sec-intl.collator.prototype.resolvedoptions */           \
   CPP(CollatorPrototypeResolvedOptions)                                \
   /* ecma402 #sup-date.prototype.tolocaledatestring */                 \
   CPP(DatePrototypeToLocaleDateString)                                 \
@@ -1028,21 +1049,46 @@ namespace internal {
   CPP(ListFormatSupportedLocalesOf)                                    \
   /* ecma402 #sec-intl-locale-constructor */                           \
   CPP(LocaleConstructor)                                               \
+  /* ecma402 #sec-Intl.Locale.prototype.baseName */                    \
   CPP(LocalePrototypeBaseName)                                         \
+  /* ecma402 #sec-Intl.Locale.prototype.calendar */                    \
   CPP(LocalePrototypeCalendar)                                         \
+  /* ecma402 #sec-Intl.Locale.prototype.calendars */                   \
+  CPP(LocalePrototypeCalendars)                                        \
+  /* ecma402 #sec-Intl.Locale.prototype.caseFirst */                   \
   CPP(LocalePrototypeCaseFirst)                                        \
+  /* ecma402 #sec-Intl.Locale.prototype.collation */                   \
   CPP(LocalePrototypeCollation)                                        \
+  /* ecma402 #sec-Intl.Locale.prototype.collations */                  \
+  CPP(LocalePrototypeCollations)                                       \
+  /* ecma402 #sec-Intl.Locale.prototype.hourCycle */                   \
   CPP(LocalePrototypeHourCycle)                                        \
+  /* ecma402 #sec-Intl.Locale.prototype.hourCycles */                  \
+  CPP(LocalePrototypeHourCycles)                                       \
+  /* ecma402 #sec-Intl.Locale.prototype.language */                    \
   CPP(LocalePrototypeLanguage)                                         \
   /* ecma402 #sec-Intl.Locale.prototype.maximize */                    \
   CPP(LocalePrototypeMaximize)                                         \
   /* ecma402 #sec-Intl.Locale.prototype.minimize */                    \
   CPP(LocalePrototypeMinimize)                                         \
+  /* ecma402 #sec-Intl.Locale.prototype.numeric */                     \
   CPP(LocalePrototypeNumeric)                                          \
+  /* ecma402 #sec-Intl.Locale.prototype.numberingSystem */             \
   CPP(LocalePrototypeNumberingSystem)                                  \
+  /* ecma402 #sec-Intl.Locale.prototype.numberingSystems */            \
+  CPP(LocalePrototypeNumberingSystems)                                 \
+  /* ecma402 #sec-Intl.Locale.prototype.region */                      \
   CPP(LocalePrototypeRegion)                                           \
+  /* ecma402 #sec-Intl.Locale.prototype.script */                      \
   CPP(LocalePrototypeScript)                                           \
+  /* ecma402 #sec-Intl.Locale.prototype.textInfo */                    \
+  CPP(LocalePrototypeTextInfo)                                         \
+  /* ecma402 #sec-Intl.Locale.prototype.timezones */                   \
+  CPP(LocalePrototypeTimeZones)                                        \
+  /* ecma402 #sec-Intl.Locale.prototype.toString */                    \
   CPP(LocalePrototypeToString)                                         \
+  /* ecma402 #sec-Intl.Locale.prototype.weekInfo */                    \
+  CPP(LocalePrototypeWeekInfo)                                         \
   /* ecma402 #sec-intl.numberformat */                                 \
   CPP(NumberFormatConstructor)                                         \
   /* ecma402 #sec-number-format-functions */                           \
@@ -1057,6 +1103,7 @@ namespace internal {
   CPP(NumberFormatSupportedLocalesOf)                                  \
   /* ecma402 #sec-intl.pluralrules */                                  \
   CPP(PluralRulesConstructor)                                          \
+  /* ecma402 #sec-intl.pluralrules.prototype.resolvedoptions */        \
   CPP(PluralRulesPrototypeResolvedOptions)                             \
   /* ecma402 #sec-intl.pluralrules.prototype.select */                 \
   CPP(PluralRulesPrototypeSelect)                                      \

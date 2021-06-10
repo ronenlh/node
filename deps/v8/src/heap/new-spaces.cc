@@ -4,6 +4,7 @@
 
 #include "src/heap/new-spaces.h"
 
+#include "src/common/globals.h"
 #include "src/heap/array-buffer-sweeper.h"
 #include "src/heap/heap-inl.h"
 #include "src/heap/incremental-marking.h"
@@ -472,8 +473,11 @@ void NewSpace::UpdateLinearAllocationArea(Address known_top) {
   allocation_info_.Reset(new_top, to_space_.page_high());
   // The order of the following two stores is important.
   // See the corresponding loads in ConcurrentMarking::Run.
-  original_limit_.store(limit(), std::memory_order_relaxed);
-  original_top_.store(top(), std::memory_order_release);
+  {
+    base::SharedMutexGuard<base::kExclusive> guard(&pending_allocation_mutex_);
+    original_limit_.store(limit(), std::memory_order_relaxed);
+    original_top_.store(top(), std::memory_order_release);
+  }
   DCHECK_SEMISPACE_ALLOCATION_INFO(allocation_info_, to_space_);
 
   UpdateInlineAllocationLimit(0);
@@ -628,8 +632,9 @@ AllocationResult NewSpace::AllocateRawSlow(int size_in_bytes,
 
 AllocationResult NewSpace::AllocateRawUnaligned(int size_in_bytes,
                                                 AllocationOrigin origin) {
+  DCHECK(!FLAG_enable_third_party_heap);
   if (!EnsureAllocation(size_in_bytes, kWordAligned)) {
-    return AllocationResult::Retry();
+    return AllocationResult::Retry(NEW_SPACE);
   }
 
   DCHECK_EQ(allocation_info_.start(), allocation_info_.top());
@@ -646,8 +651,9 @@ AllocationResult NewSpace::AllocateRawUnaligned(int size_in_bytes,
 AllocationResult NewSpace::AllocateRawAligned(int size_in_bytes,
                                               AllocationAlignment alignment,
                                               AllocationOrigin origin) {
+  DCHECK(!FLAG_enable_third_party_heap);
   if (!EnsureAllocation(size_in_bytes, alignment)) {
-    return AllocationResult::Retry();
+    return AllocationResult::Retry(NEW_SPACE);
   }
 
   DCHECK_EQ(allocation_info_.start(), allocation_info_.top());
@@ -741,9 +747,11 @@ void NewSpace::Verify(Isolate* isolate) {
     CHECK_EQ(external_space_bytes[t], ExternalBackingStoreBytes(t));
   }
 
+  if (!FLAG_concurrent_array_buffer_sweeping) {
     size_t bytes = heap()->array_buffer_sweeper()->young().BytesSlow();
     CHECK_EQ(bytes,
              ExternalBackingStoreBytes(ExternalBackingStoreType::kArrayBuffer));
+  }
 
   // Check semi-spaces.
   CHECK_EQ(from_space_.id(), kFromSpace);

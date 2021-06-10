@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --experimental-wasm-gc
+// Flags: --experimental-wasm-gc-experiments
 
-load("test/mjsunit/wasm/wasm-module-builder.js");
+d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
 
-(function Test1() {
-  var exporting_instance = (function () {
+(function TestReferenceGlobals() {
+  var exporting_instance = (function() {
     var builder = new WasmModuleBuilder();
 
     var sig_index = builder.addType(kSig_i_ii);
@@ -17,9 +17,9 @@ load("test/mjsunit/wasm/wasm-module-builder.js");
       .addBody([kExprLocalGet, 0, kExprLocalGet, 1, kExprI32Add])
       .exportFunc();
 
-    var global = builder.addGlobal(wasmRefType(sig_index), false);
-    global.function_index = addition_index;
-    global.exportAs("global");
+    builder.addGlobal(wasmRefType(sig_index), false,
+                      WasmInitExpr.RefFunc(addition_index))
+           .exportAs("global");
     builder.addGlobal(wasmOptRefType(wrong_sig_index), false)
       .exportAs("mistyped_global");
 
@@ -102,4 +102,59 @@ load("test/mjsunit/wasm/wasm-module-builder.js");
 
   // The correct function reference has been passed.
   assertEquals(66, instance.exports.test_import(42, 24));
+})();
+
+(function TestStructInitExpr() {
+  var builder = new WasmModuleBuilder();
+  var struct_index = builder.addStruct([{type: kWasmI32, mutability: false}]);
+  var composite_struct_index = builder.addStruct(
+      [{type: kWasmI32, mutability: false},
+       {type: wasmRefType(struct_index), mutability: false},
+       {type: kWasmI8, mutability: true}]);
+
+  let field1_value = 432;
+  let field2_value = -123;
+  let field3_value = -555;
+
+  var global0 = builder.addGlobal(
+      wasmRefType(struct_index), false,
+      WasmInitExpr.StructNewWithRtt(
+          struct_index,
+          [WasmInitExpr.I32Const(field2_value),
+           WasmInitExpr.RttCanon(struct_index)]));
+
+  var global = builder.addGlobal(
+      wasmRefType(composite_struct_index), false,
+      WasmInitExpr.StructNewWithRtt(
+          composite_struct_index,
+          [WasmInitExpr.I32Const(field1_value),
+           WasmInitExpr.GlobalGet(global0.index),
+           WasmInitExpr.I32Const(field3_value),
+           WasmInitExpr.RttCanon(composite_struct_index)]));
+
+  builder.addFunction("field_1", kSig_i_v)
+    .addBody([
+      kExprGlobalGet, global.index,
+      kGCPrefix, kExprStructGet, composite_struct_index, 0
+    ])
+    .exportFunc();
+
+  builder.addFunction("field_2", kSig_i_v)
+    .addBody([
+      kExprGlobalGet, global.index,
+      kGCPrefix, kExprStructGet, composite_struct_index, 1,
+      kGCPrefix, kExprStructGet, struct_index, 0
+    ])
+    .exportFunc();
+
+  builder.addFunction("field_3", kSig_i_v)
+    .addBody([
+      kExprGlobalGet, global.index,
+      kGCPrefix, kExprStructGetS, composite_struct_index, 2])
+    .exportFunc();
+  var instance = builder.instantiate({});
+
+  assertEquals(field1_value, instance.exports.field_1());
+  assertEquals(field2_value, instance.exports.field_2());
+  assertEquals((field3_value << 24) >> 24, instance.exports.field_3());
 })();

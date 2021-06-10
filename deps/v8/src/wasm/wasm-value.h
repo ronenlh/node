@@ -12,7 +12,7 @@
 #include "src/base/memory.h"
 #include "src/handles/handles.h"
 #include "src/utils/boxed-float.h"
-#include "src/wasm/wasm-opcodes.h"
+#include "src/wasm/value-type.h"
 #include "src/zone/zone-containers.h"
 
 namespace v8 {
@@ -47,6 +47,11 @@ class Simd128 {
   }
   FOREACH_SIMD_TYPE(DEFINE_SIMD_TYPE_SPECIFIC_METHODS)
 #undef DEFINE_SIMD_TYPE_SPECIFIC_METHODS
+
+  explicit Simd128(byte* bytes) {
+    base::Memcpy(static_cast<void*>(val_), reinterpret_cast<void*>(bytes),
+                 kSimd128Size);
+  }
 
   const uint8_t* bytes() { return val_; }
 
@@ -108,6 +113,13 @@ class WasmValue {
   FOREACH_PRIMITIVE_WASMVAL_TYPE(DEFINE_TYPE_SPECIFIC_METHODS)
 #undef DEFINE_TYPE_SPECIFIC_METHODS
 
+  // Instantiate a numeric WasmValue from a byte pointer to a little endian
+  // value.
+  WasmValue(byte* raw_bytes, ValueType type) : type_(type), bit_pattern_{} {
+    DCHECK(type_.is_numeric());
+    base::Memcpy(bit_pattern_, raw_bytes, type.element_size_bytes());
+  }
+
   WasmValue(Handle<Object> ref, ValueType type) : type_(type), bit_pattern_{} {
     static_assert(sizeof(Handle<Object>) <= sizeof(bit_pattern_),
                   "bit_pattern_ must be large enough to fit a Handle");
@@ -128,6 +140,73 @@ class WasmValue {
            !memcmp(bit_pattern_, other.bit_pattern_, 16);
   }
 
+  // Copy the underlying value to a byte pointer to a little endian value.
+  void CopyTo(byte* to) const {
+    DCHECK(type_.is_numeric());
+    base::Memcpy(to, bit_pattern_, type_.element_size_bytes());
+  }
+
+  // Store the undelying value to a byte pointer, using the system's endianness.
+  void CopyToWithSystemEndianness(byte* to) {
+    DCHECK(type_.is_numeric());
+    switch (type_.kind()) {
+      case kI8: {
+        int8_t value = to_i8();
+        base::Memcpy(static_cast<void*>(to), &value, sizeof(value));
+        break;
+      }
+      case kI16: {
+        int16_t value = to_i16();
+        base::Memcpy(static_cast<void*>(to), &value, sizeof(value));
+        break;
+      }
+      case kI32: {
+        int32_t value = to_i32();
+        base::Memcpy(static_cast<void*>(to), &value, sizeof(value));
+        break;
+      }
+      case kI64: {
+        int64_t value = to_i64();
+        base::Memcpy(static_cast<void*>(to), &value, sizeof(value));
+        break;
+      }
+      case kF32: {
+        float value = to_f32();
+        base::Memcpy(static_cast<void*>(to), &value, sizeof(value));
+        break;
+      }
+      case kF64: {
+        double value = to_f64();
+        base::Memcpy(static_cast<void*>(to), &value, sizeof(value));
+        break;
+      }
+      case kS128:
+        base::Memcpy(static_cast<void*>(to), to_s128().bytes(), kSimd128Size);
+        break;
+      case kRtt:
+      case kRttWithDepth:
+      case kRef:
+      case kOptRef:
+      case kBottom:
+      case kVoid:
+        UNREACHABLE();
+    }
+  }
+
+  // If {packed_type.is_packed()}, create a new value of {packed_type()}.
+  // Otherwise, return this object.
+  WasmValue Packed(ValueType packed_type) const {
+    if (packed_type == kWasmI8) {
+      DCHECK_EQ(type_, kWasmI32);
+      return WasmValue(static_cast<int8_t>(to_i32()));
+    }
+    if (packed_type == kWasmI16) {
+      DCHECK_EQ(type_, kWasmI32);
+      return WasmValue(static_cast<int16_t>(to_i32()));
+    }
+    return *this;
+  }
+
   template <typename T>
   inline T to() const;
 
@@ -138,6 +217,40 @@ class WasmValue {
     using type =
         std::conditional<kSystemPointerSize == 8, uint64_t, uint32_t>::type;
     return WasmValue{type{value}};
+  }
+
+  inline std::string to_string() const {
+    switch (type_.kind()) {
+      case kI8:
+        return std::to_string(to_i8());
+      case kI16:
+        return std::to_string(to_i16());
+      case kI32:
+        return std::to_string(to_i32());
+      case kI64:
+        return std::to_string(to_i64());
+      case kF32:
+        return std::to_string(to_f32());
+      case kF64:
+        return std::to_string(to_f64());
+      case kS128: {
+        std::stringstream stream;
+        stream << "0x" << std::hex;
+        for (int8_t byte : bit_pattern_) {
+          if (!(byte & 0xf0)) stream << '0';
+          stream << byte;
+        }
+        return stream.str();
+      }
+      case kOptRef:
+      case kRef:
+      case kRtt:
+      case kRttWithDepth:
+        return "Handle [" + std::to_string(to_ref().address()) + "]";
+      case kVoid:
+      case kBottom:
+        UNREACHABLE();
+    }
   }
 
  private:

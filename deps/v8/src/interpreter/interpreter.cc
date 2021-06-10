@@ -18,7 +18,7 @@
 #include "src/init/setup-isolate.h"
 #include "src/interpreter/bytecode-generator.h"
 #include "src/interpreter/bytecodes.h"
-#include "src/logging/counters-inl.h"
+#include "src/logging/runtime-call-stats-scope.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/shared-function-info.h"
 #include "src/objects/slots.h"
@@ -50,14 +50,13 @@ class InterpreterCompilationJob final : public UnoptimizedCompilationJob {
 
  private:
   BytecodeGenerator* generator() { return &generator_; }
-  template <typename LocalIsolate>
-  void CheckAndPrintBytecodeMismatch(LocalIsolate* isolate,
-                                     Handle<Script> script,
+  template <typename IsolateT>
+  void CheckAndPrintBytecodeMismatch(IsolateT* isolate, Handle<Script> script,
                                      Handle<BytecodeArray> bytecode);
 
-  template <typename LocalIsolate>
+  template <typename IsolateT>
   Status DoFinalizeJobImpl(Handle<SharedFunctionInfo> shared_info,
-                           LocalIsolate* isolate);
+                           IsolateT* isolate);
 
   Zone zone_;
   UnoptimizedCompilationInfo compilation_info_;
@@ -70,13 +69,17 @@ Interpreter::Interpreter(Isolate* isolate)
       interpreter_entry_trampoline_instruction_start_(kNullAddress) {
   memset(dispatch_table_, 0, sizeof(dispatch_table_));
 
-  if (FLAG_trace_ignition_dispatches) {
-    static const int kBytecodeCount = static_cast<int>(Bytecode::kLast) + 1;
-    bytecode_dispatch_counters_table_.reset(
-        new uintptr_t[kBytecodeCount * kBytecodeCount]);
-    memset(bytecode_dispatch_counters_table_.get(), 0,
-           sizeof(uintptr_t) * kBytecodeCount * kBytecodeCount);
+  if (V8_IGNITION_DISPATCH_COUNTING_BOOL) {
+    InitDispatchCounters();
   }
+}
+
+void Interpreter::InitDispatchCounters() {
+  static const int kBytecodeCount = static_cast<int>(Bytecode::kLast) + 1;
+  bytecode_dispatch_counters_table_.reset(
+      new uintptr_t[kBytecodeCount * kBytecodeCount]);
+  memset(bytecode_dispatch_counters_table_.get(), 0,
+         sizeof(uintptr_t) * kBytecodeCount * kBytecodeCount);
 }
 
 namespace {
@@ -95,7 +98,7 @@ int BuiltinIndexFromBytecode(Bytecode bytecode, OperandScale operand_scale) {
     // kIllegalBytecodeHandlerEncoding for illegal bytecode/scale combinations.
     uint8_t offset = kWideBytecodeToBuiltinsMapping[index];
     if (offset == kIllegalBytecodeHandlerEncoding) {
-      return Builtins::kIllegalHandler;
+      return Builtin::kIllegalHandler;
     } else {
       index = kNumberOfBytecodeHandlers + offset;
       if (operand_scale == OperandScale::kQuadruple) {
@@ -103,7 +106,7 @@ int BuiltinIndexFromBytecode(Bytecode bytecode, OperandScale operand_scale) {
       }
     }
   }
-  return Builtins::kFirstBytecodeHandler + index;
+  return Builtin::kFirstBytecodeHandler + index;
 }
 
 }  // namespace
@@ -177,10 +180,9 @@ InterpreterCompilationJob::InterpreterCompilationJob(
                  eager_inner_literals) {}
 
 InterpreterCompilationJob::Status InterpreterCompilationJob::ExecuteJobImpl() {
-  RuntimeCallTimerScope runtimeTimerScope(
-      parse_info()->runtime_call_stats(),
-      RuntimeCallCounterId::kCompileIgnition,
-      RuntimeCallStats::kThreadSpecific);
+  RCS_SCOPE(parse_info()->runtime_call_stats(),
+            RuntimeCallCounterId::kCompileIgnition,
+            RuntimeCallStats::kThreadSpecific);
   // TODO(lpy): add support for background compilation RCS trace.
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.compile"), "V8.CompileIgnition");
 
@@ -203,10 +205,9 @@ InterpreterCompilationJob::Status InterpreterCompilationJob::ExecuteJobImpl() {
 }
 
 #ifdef DEBUG
-template <typename LocalIsolate>
+template <typename IsolateT>
 void InterpreterCompilationJob::CheckAndPrintBytecodeMismatch(
-    LocalIsolate* isolate, Handle<Script> script,
-    Handle<BytecodeArray> bytecode) {
+    IsolateT* isolate, Handle<Script> script, Handle<BytecodeArray> bytecode) {
   int first_mismatch = generator()->CheckBytecodeMatches(*bytecode);
   if (first_mismatch >= 0) {
     parse_info()->ast_value_factory()->Internalize(isolate);
@@ -243,9 +244,8 @@ void InterpreterCompilationJob::CheckAndPrintBytecodeMismatch(
 
 InterpreterCompilationJob::Status InterpreterCompilationJob::FinalizeJobImpl(
     Handle<SharedFunctionInfo> shared_info, Isolate* isolate) {
-  RuntimeCallTimerScope runtimeTimerScope(
-      parse_info()->runtime_call_stats(),
-      RuntimeCallCounterId::kCompileIgnitionFinalization);
+  RCS_SCOPE(parse_info()->runtime_call_stats(),
+            RuntimeCallCounterId::kCompileIgnitionFinalization);
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.compile"),
                "V8.CompileIgnitionFinalization");
   return DoFinalizeJobImpl(shared_info, isolate);
@@ -253,17 +253,16 @@ InterpreterCompilationJob::Status InterpreterCompilationJob::FinalizeJobImpl(
 
 InterpreterCompilationJob::Status InterpreterCompilationJob::FinalizeJobImpl(
     Handle<SharedFunctionInfo> shared_info, LocalIsolate* isolate) {
-  RuntimeCallTimerScope runtimeTimerScope(
-      parse_info()->runtime_call_stats(),
-      RuntimeCallCounterId::kCompileBackgroundIgnitionFinalization);
+  RCS_SCOPE(parse_info()->runtime_call_stats(),
+            RuntimeCallCounterId::kCompileBackgroundIgnitionFinalization);
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.compile"),
                "V8.CompileIgnitionFinalization");
   return DoFinalizeJobImpl(shared_info, isolate);
 }
 
-template <typename LocalIsolate>
+template <typename IsolateT>
 InterpreterCompilationJob::Status InterpreterCompilationJob::DoFinalizeJobImpl(
-    Handle<SharedFunctionInfo> shared_info, LocalIsolate* isolate) {
+    Handle<SharedFunctionInfo> shared_info, IsolateT* isolate) {
   Handle<BytecodeArray> bytecodes = compilation_info_.bytecode_array();
   if (bytecodes.is_null()) {
     bytecodes = generator()->FinalizeBytecode(
@@ -381,6 +380,9 @@ const char* Interpreter::LookupNameOfBytecodeHandler(const Code code) {
 uintptr_t Interpreter::GetDispatchCounter(Bytecode from, Bytecode to) const {
   int from_index = Bytecodes::ToByte(from);
   int to_index = Bytecodes::ToByte(to);
+  CHECK_WITH_MSG(bytecode_dispatch_counters_table_ != nullptr,
+                 "Dispatch counters require building with "
+                 "v8_enable_ignition_dispatch_counting");
   return bytecode_dispatch_counters_table_[from_index * kNumberOfBytecodes +
                                            to_index];
 }

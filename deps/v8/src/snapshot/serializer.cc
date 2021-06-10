@@ -98,9 +98,9 @@ void Serializer::OutputStatistics(const char* name) {
   }
   INSTANCE_TYPE_LIST(PRINT_INSTANCE_TYPE)
 #undef PRINT_INSTANCE_TYPE
+#endif  // OBJECT_PRINT
 
   PrintF("\n");
-#endif  // OBJECT_PRINT
 }
 
 void Serializer::SerializeDeferredObjects() {
@@ -998,12 +998,12 @@ void Serializer::ObjectSerializer::VisitRuntimeEntry(Code host,
 
 void Serializer::ObjectSerializer::VisitOffHeapTarget(Code host,
                                                       RelocInfo* rinfo) {
-  STATIC_ASSERT(EmbeddedData::kTableSize == Builtins::builtin_count);
+  STATIC_ASSERT(EmbeddedData::kTableSize == Builtins::kBuiltinCount);
 
   Address addr = rinfo->target_off_heap_target();
   CHECK_NE(kNullAddress, addr);
 
-  Builtins::Name builtin = InstructionStream::TryLookupCode(isolate(), addr);
+  Builtin builtin = InstructionStream::TryLookupCode(isolate(), addr);
   CHECK(Builtins::IsBuiltinId(builtin));
   CHECK(Builtins::IsIsolateIndependent(builtin));
 
@@ -1190,9 +1190,9 @@ void Serializer::ObjectSerializer::SerializeCode(Map map, int size) {
 }
 
 Serializer::HotObjectsList::HotObjectsList(Heap* heap) : heap_(heap) {
-  strong_roots_entry_ =
-      heap->RegisterStrongRoots(FullObjectSlot(&circular_queue_[0]),
-                                FullObjectSlot(&circular_queue_[kSize]));
+  strong_roots_entry_ = heap->RegisterStrongRoots(
+      "Serializer::HotObjectsList", FullObjectSlot(&circular_queue_[0]),
+      FullObjectSlot(&circular_queue_[kSize]));
 }
 Serializer::HotObjectsList::~HotObjectsList() {
   heap_->UnregisterStrongRoots(strong_roots_entry_);

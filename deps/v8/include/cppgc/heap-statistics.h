@@ -5,7 +5,8 @@
 #ifndef INCLUDE_CPPGC_HEAP_STATISTICS_H_
 #define INCLUDE_CPPGC_HEAP_STATISTICS_H_
 
-#include <memory>
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -57,7 +58,7 @@ struct HeapStatistics final {
   };
 
   /**
-   * Stastistics of the freelist (used only in non-large object spaces). For
+   * Statistics of the freelist (used only in non-large object spaces). For
    * each bucket in the freelist the statistics record the bucket size, the
    * number of freelist entries in the bucket, and the overall allocated memory
    * consumed by these freelist entries.
@@ -67,7 +68,7 @@ struct HeapStatistics final {
     std::vector<size_t> bucket_size;
     /** number of freelist entries per bucket. */
     std::vector<size_t> free_count;
-    /** memory size concumed by freelist entries per size. */
+    /** memory size consumed by freelist entries per size. */
     std::vector<size_t> free_size;
   };
 

@@ -25,21 +25,28 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+// Flags: --enable-os-system
 // Resources: test/mjsunit/tools/tickprocessor-test-func-info.log
+// Resources: test/mjsunit/tools/tickprocessor-test-func-info.log.symbols.json
+// Resources: test/mjsunit/tools/tickprocessor-test-large.default
+// Resources: test/mjsunit/tools/tickprocessor-test-large.js
+// Resources: test/mjsunit/tools/tickprocessor-test-large.log
+// Resources: test/mjsunit/tools/tickprocessor-test-large.log.symbols.json
 // Resources: test/mjsunit/tools/tickprocessor-test.default
 // Resources: test/mjsunit/tools/tickprocessor-test.func-info
 // Resources: test/mjsunit/tools/tickprocessor-test.gc-state
 // Resources: test/mjsunit/tools/tickprocessor-test.ignore-unknown
 // Resources: test/mjsunit/tools/tickprocessor-test.log
+// Resources: test/mjsunit/tools/tickprocessor-test.log.symbols.json
 // Resources: test/mjsunit/tools/tickprocessor-test.only-summary
+// Resources: test/mjsunit/tools/tickprocessor-test.separate-baseline-handlers
+// Resources: test/mjsunit/tools/tickprocessor-test.separate-bytecodes
 // Resources: test/mjsunit/tools/tickprocessor-test.separate-ic
-// Env: TEST_FILE_NAME
 
 import {
-  TickProcessor, ArgumentsProcessor, UnixCppEntriesProvider,
-  MacCppEntriesProvider, WindowsCppEntriesProvider, readFile
+  TickProcessor, ArgumentsProcessor, LinuxCppEntriesProvider,
+  MacOSCppEntriesProvider, WindowsCppEntriesProvider
 } from "../../../tools/tickprocessor.mjs";
-
 
 (function testArgumentsProcessor() {
   var p_default = new ArgumentsProcessor([]);
@@ -76,10 +83,10 @@ import {
 
 
 (function testUnixCppEntriesProvider() {
-  var oldLoadSymbols = UnixCppEntriesProvider.prototype.loadSymbols;
+  var oldLoadSymbols = LinuxCppEntriesProvider.prototype.loadSymbols;
 
   // shell executable
-  UnixCppEntriesProvider.prototype.loadSymbols = function(libName) {
+  LinuxCppEntriesProvider.prototype.loadSymbols = function(libName) {
     this.symbols = [[
       '         U operator delete[](void*)@@GLIBCXX_3.4',
       '08049790 T _init',
@@ -93,7 +100,7 @@ import {
     ].join('\n'), ''];
   };
 
-  var shell_prov = new UnixCppEntriesProvider();
+  var shell_prov = new LinuxCppEntriesProvider();
   var shell_syms = [];
   shell_prov.parseVmSymbols('shell', 0x08048000, 0x081ee000, 0,
       function (name, start, end) {
@@ -109,7 +116,7 @@ import {
       shell_syms);
 
   // libc library
-  UnixCppEntriesProvider.prototype.loadSymbols = function(libName) {
+  LinuxCppEntriesProvider.prototype.loadSymbols = function(libName) {
     this.symbols = [[
         '000162a0 00000005 T __libc_init_first',
         '0002a5f0 0000002d T __isnan',
@@ -119,7 +126,7 @@ import {
         '0011a340 00000048 T __libc_thread_freeres',
         '00128860 00000024 R _itoa_lower_digits\n'].join('\n'), ''];
   };
-  var libc_prov = new UnixCppEntriesProvider();
+  var libc_prov = new LinuxCppEntriesProvider();
   var libc_syms = [];
   libc_prov.parseVmSymbols('libc', 0xf7c5c000, 0xf7da5000, 0,
       function (name, start, end) {
@@ -136,7 +143,7 @@ import {
   assertEquals(libc_ref_syms, libc_syms);
 
   // Android library with zero length duplicates.
-  UnixCppEntriesProvider.prototype.loadSymbols = function(libName) {
+  LinuxCppEntriesProvider.prototype.loadSymbols = function(libName) {
     this.symbols = [[
       '00000000013a1088 0000000000000224 t v8::internal::interpreter::BytecodeGenerator::BytecodeGenerator(v8::internal::UnoptimizedCompilationInfo*)',
       '00000000013a1088 0000000000000224 t v8::internal::interpreter::BytecodeGenerator::BytecodeGenerator(v8::internal::UnoptimizedCompilationInfo*)',
@@ -156,7 +163,7 @@ import {
       '00000000013a1c24 000000000000009c t v8::internal::interpreter::BytecodeGenerator::ContextScope::ContextScope(v8::internal::interpreter::BytecodeGenerator*, v8::internal::Scope*)\n',
     ].join('\n'), ''];
   };
-  var android_prov = new UnixCppEntriesProvider();
+  var android_prov = new LinuxCppEntriesProvider();
   var android_syms = [];
   android_prov.parseVmSymbols('libmonochrome', 0xf7c5c000, 0xf9c5c000, 0,
       function (name, start, end) {
@@ -176,15 +183,15 @@ import {
   }
   assertEquals(android_ref_syms, android_syms);
 
-  UnixCppEntriesProvider.prototype.loadSymbols = oldLoadSymbols;
+  LinuxCppEntriesProvider.prototype.loadSymbols = oldLoadSymbols;
 })();
 
 
-(function testMacCppEntriesProvider() {
-  var oldLoadSymbols = MacCppEntriesProvider.prototype.loadSymbols;
+(function testMacOSCppEntriesProvider() {
+  var oldLoadSymbols = MacOSCppEntriesProvider.prototype.loadSymbols;
 
   // shell executable
-  MacCppEntriesProvider.prototype.loadSymbols = function(libName) {
+  MacOSCppEntriesProvider.prototype.loadSymbols = function(libName) {
     this.symbols = [[
       '         operator delete[]',
       '00001000 __mh_execute_header',
@@ -197,7 +204,7 @@ import {
     ].join('\n'), ''];
   };
 
-  var shell_prov = new MacCppEntriesProvider();
+  var shell_prov = new MacOSCppEntriesProvider();
   var shell_syms = [];
   shell_prov.parseVmSymbols('shell', 0x00001c00, 0x00163256, 0x100,
       function (name, start, end) {
@@ -213,14 +220,14 @@ import {
       shell_syms);
 
   // stdc++ library
-  MacCppEntriesProvider.prototype.loadSymbols = function(libName) {
+  MacOSCppEntriesProvider.prototype.loadSymbols = function(libName) {
     this.symbols = [[
         '0000107a __gnu_cxx::balloc::__mini_vector<std::pair<__gnu_cxx::bitmap_allocator<char>::_Alloc_block*, __gnu_cxx::bitmap_allocator<char>::_Alloc_block*> >::__mini_vector',
         '0002c410 std::basic_streambuf<char, std::char_traits<char> >::pubseekoff',
         '0002c488 std::basic_streambuf<char, std::char_traits<char> >::pubseekpos',
         '000466aa ___cxa_pure_virtual\n'].join('\n'), ''];
   };
-  var stdc_prov = new MacCppEntriesProvider();
+  var stdc_prov = new MacOSCppEntriesProvider();
   var stdc_syms = [];
   stdc_prov.parseVmSymbols('stdc++', 0x95728fb4, 0x95770005, 0,
       function (name, start, end) {
@@ -236,7 +243,7 @@ import {
   }
   assertEquals(stdc_ref_syms, stdc_syms);
 
-  MacCppEntriesProvider.prototype.loadSymbols = oldLoadSymbols;
+  MacOSCppEntriesProvider.prototype.loadSymbols = oldLoadSymbols;
 })();
 
 
@@ -353,140 +360,145 @@ import {
 })();
 
 
-function CppEntriesProviderMock() {
-};
-
-
-CppEntriesProviderMock.prototype.parseVmSymbols = function(
-    name, startAddr, endAddr, slideAddr, symbolAdder) {
-  var symbols = {
-    'shell':
-        [['v8::internal::JSObject::LookupOwnRealNamedProperty(v8::internal::String*, v8::internal::LookupResult*)', 0x080f8800, 0x080f8d90],
-         ['v8::internal::HashTable<v8::internal::StringDictionaryShape, v8::internal::String*>::FindEntry(v8::internal::String*)', 0x080f8210, 0x080f8800],
-         ['v8::internal::Runtime_Math_exp(v8::internal::Arguments)', 0x08123b20, 0x08123b80]],
-    '/lib32/libm-2.7.so':
-        [['exp', startAddr + 0x00009e80, startAddr + 0x00009e80 + 0xa3],
-         ['fegetexcept', startAddr + 0x000061e0, startAddr + 0x000061e0 + 0x15]],
-    'ffffe000-fffff000': []};
-  assertTrue(name in symbols);
-  var syms = symbols[name];
-  for (var i = 0; i < syms.length; ++i) {
-    symbolAdder.apply(null, syms[i]);
+class CppEntriesProviderMock {
+  constructor(filename) {
+    this.isLoaded = false;
+    this.symbols = JSON.parse(d8.file.read(filename));
   }
-};
-
-
-function PrintMonitor(outputOrFileName) {
-  this.expectedOut = outputOrFileName;
-  this.outputFile = undefined;
-  if (typeof outputOrFileName == 'string') {
-    this.expectedOut = this.loadExpectedOutput(outputOrFileName)
-    this.outputFile = outputOrFileName;
+  parseVmSymbols(name, startAddr, endAddr, slideAddr, symbolAdder) {
+    if (this.isLoaded) return;
+    this.isLoaded = true;
+    for (let symbol of this.symbols) {
+      symbolAdder.apply(null, symbol);
+    }
   }
-  var expectedOut = this.expectedOut;
-  var outputPos = 0;
-  var diffs = this.diffs = [];
-  var realOut = this.realOut = [];
-  var unexpectedOut = this.unexpectedOut = null;
+}
 
-  this.oldPrint = print;
-  print = function(str) {
-    var strSplit = str.split('\n');
-    for (var i = 0; i < strSplit.length; ++i) {
-      var s = strSplit[i];
-      realOut.push(s);
-      if (outputPos < expectedOut.length) {
-        if (expectedOut[outputPos] != s) {
-          diffs.push('line ' + outputPos + ': expected <' +
-                     expectedOut[outputPos] + '> found <' + s + '>\n');
+
+class PrintMonitor {
+  constructor(outputOrFileName) {
+    this.expectedOut = outputOrFileName;
+    this.outputFile = undefined;
+    if (typeof outputOrFileName == 'string') {
+      this.expectedOut = this.loadExpectedOutput(outputOrFileName)
+      this.outputFile = outputOrFileName;
+    }
+    let expectedOut = this.expectedOut;
+    let outputPos = 0;
+    let diffs = this.diffs = [];
+    let realOut = this.realOut = [];
+    let unexpectedOut = this.unexpectedOut = null;
+
+    this.oldPrint = print;
+    print = function(str) {
+      const strSplit = str.split('\n');
+      for (let i = 0; i < strSplit.length; ++i) {
+        const s = strSplit[i];
+        realOut.push(s);
+        if (outputPos < expectedOut.length) {
+          if (expectedOut[outputPos] != s) {
+            diffs.push('line ' + outputPos + ': expected <' +
+                      expectedOut[outputPos] + '> found <' + s + '>\n');
+          }
+          outputPos++;
+        } else {
+          unexpectedOut = true;
         }
-        outputPos++;
-      } else {
-        unexpectedOut = true;
       }
-    }
-  };
-};
+    };
+  }
 
+  loadExpectedOutput(fileName) {
+    const output = d8.file.read(fileName);
+    return output.split('\n');
+  }
 
-PrintMonitor.prototype.loadExpectedOutput = function(fileName) {
-  var output = readFile(fileName);
-  return output.split('\n');
-};
-
-
-PrintMonitor.prototype.finish = function() {
-  print = this.oldPrint;
-  if (this.diffs.length > 0 || this.unexpectedOut != null) {
-    print("===== actual output: =====");
-    print(this.realOut.join('\n'));
-    print("===== expected output: =====");
+ finish() {
+    print = this.oldPrint;
+    if (this.diffs.length == 0 && this.unexpectedOut == null) return;
+    console.log("===== actual output: =====");
+    console.log(this.realOut.join('\n'));
+    console.log("===== expected output: =====");
     if (this.outputFile) {
-      print("===== File: " + this.outputFile + " =====");
+      console.log("===== File: " + this.outputFile + " =====");
     }
-    print(this.expectedOut.join('\n'));
-    assertEquals([], this.diffs);
+    console.log(this.expectedOut.join('\n'));
+    if (this.diffs.length > 0) {
+      this.diffs.forEach(line => console.log(line))
+      assertEquals([], this.diffs);
+    }
     assertNull(this.unexpectedOut);
   }
-};
-
-
-function driveTickProcessorTest(
-    separateIc, separateBytecodes, separateBuiltins, separateStubs,
-    ignoreUnknown, stateFilter, logInput, refOutput, onlySummary) {
-  // TEST_FILE_NAME must be provided by test runner.
-  assertEquals('string', typeof TEST_FILE_NAME);
-  var pathLen = TEST_FILE_NAME.lastIndexOf('/');
-  if (pathLen == -1) {
-    pathLen = TEST_FILE_NAME.lastIndexOf('\\');
-  }
-  assertTrue(pathLen != -1);
-  var testsPath = TEST_FILE_NAME.substr(0, pathLen + 1);
-  var tp = new TickProcessor(new CppEntriesProviderMock(),
-                             separateIc,
-                             separateBytecodes,
-                             separateBuiltins,
-                             separateStubs,
-                             TickProcessor.CALL_GRAPH_SIZE,
-                             ignoreUnknown,
-                             stateFilter,
-                             "0",
-                             "auto,auto",
-                             false,
-                             false,
-                             false,
-                             onlySummary);
-  var pm = new PrintMonitor(testsPath + refOutput);
-  tp.processLogFileInTest(testsPath + logInput);
-  tp.printStatistics();
-  pm.finish();
-};
-
+}
 
 (function testProcessing() {
-  var testData = {
+  const testData = {
     'Default': [
-      false, false, true, true, false, null,
-      'tickprocessor-test.log', 'tickprocessor-test.default', false],
+      'tickprocessor-test.log', 'tickprocessor-test.default',
+      ['--separate-ic=false']],
+    'SeparateBytecodes': [
+      'tickprocessor-test.log', 'tickprocessor-test.separate-bytecodes',
+      ['--separate-ic=false', '--separate-bytecodes']],
+    'SeparateBaselineHandlers': [
+      'tickprocessor-test.log', 'tickprocessor-test.separate-baseline-handlers',
+      ['--separate-ic=false', '--separate-baseline-handlers']],
     'SeparateIc': [
-      true, false, true, true, false, null,
-      'tickprocessor-test.log', 'tickprocessor-test.separate-ic', false],
+      'tickprocessor-test.log', 'tickprocessor-test.separate-ic',
+      ['--separate-ic=true']],
     'IgnoreUnknown': [
-      false, false, true, true, true, null,
-      'tickprocessor-test.log', 'tickprocessor-test.ignore-unknown', false],
+      'tickprocessor-test.log', 'tickprocessor-test.ignore-unknown',
+      ['--separate-ic=false', '--ignore-unknown']],
     'GcState': [
-      false, false, true, true, false, TickProcessor.VmStates.GC,
-      'tickprocessor-test.log', 'tickprocessor-test.gc-state', false],
-    'FunctionInfo': [
-      false, false, true, true, false, null,
-      'tickprocessor-test-func-info.log', 'tickprocessor-test.func-info',
-      false],
+      'tickprocessor-test.log', 'tickprocessor-test.gc-state', ['-g']],
     'OnlySummary': [
-      false, false, true, true, false, null,
-      'tickprocessor-test.log', 'tickprocessor-test.only-summary', true]
+      'tickprocessor-test.log', 'tickprocessor-test.only-summary',
+      ['--separate-ic=false', '--only-summary']],
+    'FunctionInfo': [
+      'tickprocessor-test-func-info.log', 'tickprocessor-test.func-info',
+      ['']
+    ],
+    'DefaultLarge': [
+      'tickprocessor-test-large.log', 'tickprocessor-test-large.default'],
   };
   for (var testName in testData) {
-    print('=== testProcessing-' + testName + ' ===');
-    driveTickProcessorTest.apply(null, testData[testName]);
+    console.log('=== testProcessing-' + testName + ' ===');
+    testTickProcessor(...testData[testName]);
   }
 })();
+
+function testTickProcessor(logInput, refOutput, args=[]) {
+  // /foo/bar/tickprocesser.mjs => /foo/bar/
+  const dir = import.meta.url.split("/").slice(0, -1).join('/') + '/';
+  const params = ArgumentsProcessor.process(args);
+  testExpectations(dir + logInput, dir + refOutput, params);
+  // TODO(cbruni): enable again after it works on bots
+  // testEndToEnd(dir + 'tickprocessor-test-large.js', dir + refOutput,  params);
+}
+
+function testExpectations(logInput, refOutput, params) {
+  const symbolsFile = logInput + '.symbols.json';
+  const cppEntries = new CppEntriesProviderMock(symbolsFile);
+  const tickProcessor = TickProcessor.fromParams(params, cppEntries);
+  const printMonitor = new PrintMonitor(refOutput);
+  tickProcessor.processLogFileInTest(logInput);
+  tickProcessor.printStatistics();
+  printMonitor.finish();
+};
+
+function testEndToEnd(sourceFile, ignoredRefOutput, params) {
+  // This test only works on linux.
+  if (!os?.system) return;
+  if (os.name !== 'linux' && os.name !== 'macos') return;
+  params.platform = os.name;
+  const tmpLogFile= `/var/tmp/${Date.now()}.v8.log`
+  const result = os.system(
+    os.d8Path, ['--prof', `--logfile=${tmpLogFile}`, sourceFile]);
+
+  const tickProcessor = TickProcessor.fromParams(params);
+  // We will not always get the same ticks due to timing on bots,
+  // hence we cannot properly compare output expectations.
+  // Let's just use a dummy file and only test whether we don't throw.
+  const printMonitor = new PrintMonitor(ignoredRefOutput);
+  tickProcessor.processLogFileInTest(tmpLogFile);
+  tickProcessor.printStatistics();
+}

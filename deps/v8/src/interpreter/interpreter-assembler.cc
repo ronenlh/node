@@ -8,7 +8,7 @@
 #include <ostream>
 
 #include "src/codegen/code-factory.h"
-#include "src/codegen/interface-descriptors.h"
+#include "src/codegen/interface-descriptors-inl.h"
 #include "src/codegen/machine-type.h"
 #include "src/execution/frames.h"
 #include "src/interpreter/bytecodes.h"
@@ -803,7 +803,9 @@ void InterpreterAssembler::CallJSWithSpreadAndDispatch(
     TNode<UintPtrT> slot_id, TNode<HeapObject> maybe_feedback_vector) {
   DCHECK(Bytecodes::MakesCallAlongCriticalPath(bytecode_));
   DCHECK_EQ(Bytecodes::GetReceiverMode(bytecode_), ConvertReceiverMode::kAny);
-  CollectCallFeedback(function, context, maybe_feedback_vector, slot_id);
+  LazyNode<Object> receiver = [=] { return LoadRegisterAtOperandIndex(1); };
+  CollectCallFeedback(function, receiver, context, maybe_feedback_vector,
+                      slot_id);
   Comment("call using CallWithSpread builtin");
   Callable callable = CodeFactory::InterpreterPushArgsThenCall(
       isolate(), ConvertReceiverMode::kAny,
@@ -1206,7 +1208,7 @@ void InterpreterAssembler::DispatchToBytecodeWithOptionalStarLookahead(
 
 void InterpreterAssembler::DispatchToBytecode(
     TNode<WordT> target_bytecode, TNode<IntPtrT> new_bytecode_offset) {
-  if (FLAG_trace_ignition_dispatches) {
+  if (V8_IGNITION_DISPATCH_COUNTING_BOOL) {
     TraceBytecodeDispatch(target_bytecode);
   }
 
@@ -1239,7 +1241,7 @@ void InterpreterAssembler::DispatchWide(OperandScale operand_scale) {
   TNode<IntPtrT> next_bytecode_offset = Advance(1);
   TNode<WordT> next_bytecode = LoadBytecode(next_bytecode_offset);
 
-  if (FLAG_trace_ignition_dispatches) {
+  if (V8_IGNITION_DISPATCH_COUNTING_BOOL) {
     TraceBytecodeDispatch(next_bytecode);
   }
 
@@ -1305,26 +1307,6 @@ void InterpreterAssembler::AbortIfWordNotEqual(TNode<WordT> lhs,
 
   BIND(&abort);
   Abort(abort_reason);
-  Goto(&ok);
-
-  BIND(&ok);
-}
-
-void InterpreterAssembler::MaybeDropFrames(TNode<Context> context) {
-  TNode<ExternalReference> restart_fp_address =
-      ExternalConstant(ExternalReference::debug_restart_fp_address(isolate()));
-
-  TNode<IntPtrT> restart_fp = Load<IntPtrT>(restart_fp_address);
-  TNode<IntPtrT> null = IntPtrConstant(0);
-
-  Label ok(this), drop_frames(this);
-  Branch(IntPtrEqual(restart_fp, null), &ok, &drop_frames);
-
-  BIND(&drop_frames);
-  // We don't expect this call to return since the frame dropper tears down
-  // the stack and jumps into the function on the target frame to restart it.
-  CallStub(CodeFactory::FrameDropperTrampoline(isolate()), context, restart_fp);
-  Abort(AbortReason::kUnexpectedReturnFromFrameDropper);
   Goto(&ok);
 
   BIND(&ok);
@@ -1569,9 +1551,9 @@ void InterpreterAssembler::ToNumberOrNumeric(Object::Conversion mode) {
 
   BIND(&if_objectisother);
   {
-    auto builtin = Builtins::kNonNumberToNumber;
+    auto builtin = Builtin::kNonNumberToNumber;
     if (mode == Object::Conversion::kToNumeric) {
-      builtin = Builtins::kNonNumberToNumeric;
+      builtin = Builtin::kNonNumberToNumeric;
       // Special case for collecting BigInt feedback.
       Label not_bigint(this);
       GotoIfNot(IsBigInt(CAST(object)), &not_bigint);

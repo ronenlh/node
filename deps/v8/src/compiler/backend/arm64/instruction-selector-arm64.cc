@@ -354,6 +354,12 @@ bool TryMatchAnyExtend(Arm64OperandGenerator* g, InstructionSelector* selector,
         return true;
       }
     }
+  } else if (nm.IsChangeInt32ToInt64()) {
+    // Use extended register form.
+    *opcode |= AddressingModeField::encode(kMode_Operand2_R_SXTW);
+    *left_op = g->UseRegister(left_node);
+    *right_op = g->UseRegister(right_node->InputAt(0));
+    return true;
   }
   return false;
 }
@@ -827,6 +833,7 @@ void InstructionSelector::VisitLoad(Node* node) {
       opcode = kArm64LdrQ;
       immediate_mode = kNoImmediate;
       break;
+    case MachineRepresentation::kMapWord:  // Fall through.
     case MachineRepresentation::kNone:
       UNREACHABLE();
   }
@@ -936,6 +943,7 @@ void InstructionSelector::VisitStore(Node* node) {
         opcode = kArm64StrQ;
         immediate_mode = kNoImmediate;
         break;
+      case MachineRepresentation::kMapWord:  // Fall through.
       case MachineRepresentation::kNone:
         UNREACHABLE();
     }
@@ -2138,9 +2146,9 @@ void VisitCompare(InstructionSelector* selector, InstructionCode opcode,
                   FlagsContinuation* cont) {
   if (cont->IsSelect()) {
     Arm64OperandGenerator g(selector);
-    InstructionOperand inputs[] = { left, right,
-                                    g.UseRegister(cont->true_value()),
-                                    g.UseRegister(cont->false_value()) };
+    InstructionOperand inputs[] = {left, right,
+                                   g.UseRegister(cont->true_value()),
+                                   g.UseRegister(cont->false_value())};
     selector->EmitWithContinuation(opcode, 0, nullptr, 4, inputs, cont);
   } else {
     selector->EmitWithContinuation(opcode, left, right, cont);
@@ -3713,7 +3721,7 @@ void InstructionSelector::VisitI64x2Mul(Node* node) {
        arraysize(temps), temps);
 }
 
-#define VISIT_SIMD_ADD(Type)                                                   \
+#define VISIT_SIMD_ADD(Type, PairwiseType, LaneSize)                           \
   void InstructionSelector::Visit##Type##Add(Node* node) {                     \
     Arm64OperandGenerator g(this);                                             \
     Node* left = node->InputAt(0);                                             \
@@ -3731,11 +3739,29 @@ void InstructionSelector::VisitI64x2Mul(Node* node) {
            g.UseRegister(right->InputAt(1)));                                  \
       return;                                                                  \
     }                                                                          \
+    /* Select Sadalp(x, y) for Add(x, ExtAddPairwiseS(y)). */                  \
+    if (right->opcode() ==                                                     \
+            IrOpcode::k##Type##ExtAddPairwise##PairwiseType##S &&              \
+        CanCover(node, right)) {                                               \
+      Emit(kArm64Sadalp | LaneSizeField::encode(LaneSize),                     \
+           g.DefineSameAsFirst(node), g.UseRegister(left),                     \
+           g.UseRegister(right->InputAt(0)));                                  \
+      return;                                                                  \
+    }                                                                          \
+    /* Select Sadalp(y, x) for Add(ExtAddPairwiseS(x), y). */                  \
+    if (left->opcode() ==                                                      \
+            IrOpcode::k##Type##ExtAddPairwise##PairwiseType##S &&              \
+        CanCover(node, left)) {                                                \
+      Emit(kArm64Sadalp | LaneSizeField::encode(LaneSize),                     \
+           g.DefineSameAsFirst(node), g.UseRegister(right),                    \
+           g.UseRegister(left->InputAt(0)));                                   \
+      return;                                                                  \
+    }                                                                          \
     VisitRRR(this, kArm64##Type##Add, node);                                   \
   }
 
-VISIT_SIMD_ADD(I32x4)
-VISIT_SIMD_ADD(I16x8)
+VISIT_SIMD_ADD(I32x4, I16x8, 32)
+VISIT_SIMD_ADD(I16x8, I8x16, 16)
 #undef VISIT_SIMD_ADD
 
 #define VISIT_SIMD_SUB(Type)                                                  \
@@ -4038,6 +4064,12 @@ void InstructionSelector::VisitI8x16Popcnt(Node* node) {
   InstructionCode code = kArm64Cnt;
   code |= LaneSizeField::encode(8);
   VisitRR(this, code, node);
+}
+
+void InstructionSelector::AddOutputToSelectContinuation(OperandGenerator* g,
+                                                        int first_input_index,
+                                                        Node* node) {
+  continuation_outputs_.push_back(g->DefineAsRegister(node));
 }
 
 // static

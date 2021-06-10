@@ -5,8 +5,11 @@
 #ifndef V8_WASM_BASELINE_PPC_LIFTOFF_ASSEMBLER_PPC_H_
 #define V8_WASM_BASELINE_PPC_LIFTOFF_ASSEMBLER_PPC_H_
 
+#include "src/base/platform/wrappers.h"
+#include "src/codegen/assembler.h"
+#include "src/heap/memory-chunk.h"
 #include "src/wasm/baseline/liftoff-assembler.h"
-
+#include "src/wasm/simd-shuffle.h"
 
 namespace v8 {
 namespace internal {
@@ -43,6 +46,53 @@ inline MemOperand GetHalfStackSlot(int offset, RegPairHalf half) {
   int32_t half_offset =
       half == kLowWord ? 0 : LiftoffAssembler::kStackSlotSize / 2;
   return MemOperand(fp, -kInstanceOffset - offset + half_offset);
+}
+
+inline MemOperand GetStackSlot(uint32_t offset) {
+  return MemOperand(fp, -offset);
+}
+
+inline MemOperand GetInstanceOperand() { return GetStackSlot(kInstanceOffset); }
+
+inline constexpr Condition ToCondition(LiftoffCondition liftoff_cond) {
+  switch (liftoff_cond) {
+    case kEqual:
+      return eq;
+    case kUnequal:
+      return ne;
+    case kSignedLessThan:
+    case kUnsignedLessThan:
+      return lt;
+    case kSignedLessEqual:
+    case kUnsignedLessEqual:
+      return le;
+    case kSignedGreaterEqual:
+    case kUnsignedGreaterEqual:
+      return ge;
+    case kSignedGreaterThan:
+    case kUnsignedGreaterThan:
+      return gt;
+  }
+}
+
+inline constexpr bool UseSignedOp(LiftoffCondition liftoff_cond) {
+  switch (liftoff_cond) {
+    case kEqual:
+    case kUnequal:
+    case kSignedLessThan:
+    case kSignedLessEqual:
+    case kSignedGreaterThan:
+    case kSignedGreaterEqual:
+      return true;
+    case kUnsignedLessThan:
+    case kUnsignedLessEqual:
+    case kUnsignedGreaterThan:
+    case kUnsignedGreaterEqual:
+      return false;
+    default:
+      UNREACHABLE();
+  }
+  return false;
 }
 
 }  // namespace liftoff
@@ -87,42 +137,80 @@ bool LiftoffAssembler::NeedsAlignment(ValueKind kind) {
 
 void LiftoffAssembler::LoadConstant(LiftoffRegister reg, WasmValue value,
                                     RelocInfo::Mode rmode) {
-  bailout(kUnsupportedArchitecture, "LoadConstant");
+  switch (value.type().kind()) {
+    case kI32:
+      mov(reg.gp(), Operand(value.to_i32(), rmode));
+      break;
+    case kI64:
+      mov(reg.gp(), Operand(value.to_i64(), rmode));
+      break;
+    case kF32: {
+      UseScratchRegisterScope temps(this);
+      Register scratch = temps.Acquire();
+      mov(scratch, Operand(value.to_f32_boxed().get_scalar()));
+      MovIntToFloat(reg.fp(), scratch);
+      break;
+    }
+    case kF64: {
+      UseScratchRegisterScope temps(this);
+      Register scratch = temps.Acquire();
+      mov(scratch, Operand(value.to_f32_boxed().get_scalar()));
+      MovInt64ToDouble(reg.fp(), scratch);
+      break;
+    }
+    default:
+      UNREACHABLE();
+  }
 }
 
 void LiftoffAssembler::LoadInstanceFromFrame(Register dst) {
-  bailout(kUnsupportedArchitecture, "LoadInstanceFromFrame");
+  LoadU64(dst, liftoff::GetInstanceOperand(), r0);
 }
 
 void LiftoffAssembler::LoadFromInstance(Register dst, Register instance,
                                         int offset, int size) {
-  bailout(kUnsupportedArchitecture, "LoadFromInstance");
+  DCHECK_LE(0, offset);
+  switch (size) {
+    case 1:
+      LoadU8(dst, MemOperand(instance, offset), r0);
+      break;
+    case 4:
+      LoadU32(dst, MemOperand(instance, offset), r0);
+      break;
+    case 8:
+      LoadU64(dst, MemOperand(instance, offset), r0);
+      break;
+    default:
+      UNIMPLEMENTED();
+  }
 }
 
 void LiftoffAssembler::LoadTaggedPointerFromInstance(Register dst,
                                                      Register instance,
                                                      int offset) {
-  bailout(kUnsupportedArchitecture, "LoadTaggedPointerFromInstance");
+  LoadTaggedPointerField(dst, MemOperand(instance, offset), r0);
 }
 
 void LiftoffAssembler::SpillInstance(Register instance) {
-  bailout(kUnsupportedArchitecture, "SpillInstance");
+  StoreU64(instance, liftoff::GetInstanceOperand(), r0);
 }
 
+void LiftoffAssembler::ResetOSRTarget() {}
+
 void LiftoffAssembler::FillInstanceInto(Register dst) {
-  bailout(kUnsupportedArchitecture, "FillInstanceInto");
+  LoadU64(dst, liftoff::GetInstanceOperand(), r0);
 }
 
 void LiftoffAssembler::LoadTaggedPointer(Register dst, Register src_addr,
                                          Register offset_reg,
                                          int32_t offset_imm,
                                          LiftoffRegList pinned) {
-  bailout(kUnsupportedArchitecture, "LoadTaggedPointer");
+  LoadTaggedPointerField(dst, MemOperand(src_addr, offset_reg, offset_imm), r0);
 }
 
 void LiftoffAssembler::LoadFullPointer(Register dst, Register src_addr,
                                        int32_t offset_imm) {
-  bailout(kUnsupportedArchitecture, "LoadFullPointer");
+  LoadU64(dst, MemOperand(src_addr, offset_imm), r0);
 }
 
 void LiftoffAssembler::StoreTaggedPointer(Register dst_addr,
@@ -131,13 +219,39 @@ void LiftoffAssembler::StoreTaggedPointer(Register dst_addr,
                                           LiftoffRegister src,
                                           LiftoffRegList pinned,
                                           SkipWriteBarrier skip_write_barrier) {
-  bailout(kRefTypes, "GlobalSet");
+  MemOperand dst_op = MemOperand(dst_addr, offset_reg, offset_imm);
+  StoreTaggedField(src.gp(), dst_op, r0);
+
+  if (skip_write_barrier || FLAG_disable_write_barriers) return;
+
+  Label write_barrier;
+  Label exit;
+  CheckPageFlag(dst_addr, r0, MemoryChunk::kPointersFromHereAreInterestingMask,
+                ne, &write_barrier);
+  b(&exit);
+  bind(&write_barrier);
+  JumpIfSmi(src.gp(), &exit);
+  if (COMPRESS_POINTERS_BOOL) {
+    DecompressTaggedPointer(src.gp(), src.gp());
+  }
+  CheckPageFlag(src.gp(), r0, MemoryChunk::kPointersToHereAreInterestingMask,
+                eq, &exit);
+  mov(ip, Operand(offset_imm));
+  add(ip, ip, dst_addr);
+  if (offset_reg != no_reg) {
+    add(ip, ip, offset_reg);
+  }
+  CallRecordWriteStubSaveRegisters(dst_addr, ip, RememberedSetAction::kEmit,
+                                   SaveFPRegsMode::kSave,
+                                   StubCallMode::kCallWasmRuntimeStub);
+  bind(&exit);
 }
 
 void LiftoffAssembler::Load(LiftoffRegister dst, Register src_addr,
                             Register offset_reg, uintptr_t offset_imm,
                             LoadType type, LiftoffRegList pinned,
-                            uint32_t* protected_load_pc, bool is_load_mem) {
+                            uint32_t* protected_load_pc, bool is_load_mem,
+                            bool i64_offset) {
   bailout(kUnsupportedArchitecture, "Load");
 }
 
@@ -267,7 +381,7 @@ void LiftoffAssembler::FillStackSlotsWithZero(int start, int size) {
     // Special straight-line code for up to nine words. Generates one
     // instruction per word.
     for (int offset = 4; offset <= size; offset += 4) {
-      StoreP(r0, liftoff::GetHalfStackSlot(start + offset, kLowWord));
+      StoreU64(r0, liftoff::GetHalfStackSlot(start + offset, kLowWord));
     }
   } else {
     // General case for bigger counts (9 instructions).
@@ -279,7 +393,7 @@ void LiftoffAssembler::FillStackSlotsWithZero(int start, int size) {
 
     Label loop;
     bind(&loop);
-    StoreP(r0, MemOperand(r0));
+    StoreU64(r0, MemOperand(r0));
     addi(r0, r0, Operand(kSystemPointerSize));
     cmp(r4, r5);
     bne(&loop);
@@ -524,56 +638,123 @@ void LiftoffAssembler::emit_i64_signextend_i32(LiftoffRegister dst,
   bailout(kUnsupportedArchitecture, "emit_i64_signextend_i32");
 }
 
-void LiftoffAssembler::emit_jump(Label* label) {
-  bailout(kUnsupportedArchitecture, "emit_jump");
-}
+void LiftoffAssembler::emit_jump(Label* label) { b(al, label); }
 
-void LiftoffAssembler::emit_jump(Register target) {
-  bailout(kUnsupportedArchitecture, "emit_jump");
-}
+void LiftoffAssembler::emit_jump(Register target) { Jump(target); }
 
 void LiftoffAssembler::emit_cond_jump(LiftoffCondition liftoff_cond,
                                       Label* label, ValueKind kind,
                                       Register lhs, Register rhs) {
-  bailout(kUnsupportedArchitecture, "emit_cond_jump");
+  Condition cond = liftoff::ToCondition(liftoff_cond);
+  bool use_signed = liftoff::UseSignedOp(liftoff_cond);
+
+  if (rhs != no_reg) {
+    switch (kind) {
+      case kI32:
+        if (use_signed) {
+          cmpw(lhs, rhs);
+        } else {
+          cmplw(lhs, rhs);
+        }
+        break;
+      case kRef:
+      case kOptRef:
+      case kRtt:
+      case kRttWithDepth:
+        DCHECK(liftoff_cond == kEqual || liftoff_cond == kUnequal);
+        V8_FALLTHROUGH;
+      case kI64:
+        if (use_signed) {
+          cmp(lhs, rhs);
+        } else {
+          cmpl(lhs, rhs);
+        }
+        break;
+      default:
+        UNREACHABLE();
+    }
+  } else {
+    DCHECK_EQ(kind, kI32);
+    CHECK(use_signed);
+    cmpwi(lhs, Operand::Zero());
+  }
+
+  b(cond, label);
 }
 
 void LiftoffAssembler::emit_i32_cond_jumpi(LiftoffCondition liftoff_cond,
                                            Label* label, Register lhs,
                                            int32_t imm) {
-  bailout(kUnsupportedArchitecture, "emit_i32_cond_jumpi");
+  Condition cond = liftoff::ToCondition(liftoff_cond);
+  Cmpwi(lhs, Operand(imm), r0);
+  b(cond, label);
 }
 
 void LiftoffAssembler::emit_i32_eqz(Register dst, Register src) {
-  bailout(kUnsupportedArchitecture, "emit_i32_eqz");
+  Label done;
+  cmpwi(src, Operand(0));
+  mov(dst, Operand(1));
+  beq(&done);
+  mov(dst, Operand::Zero());
+  bind(&done);
 }
 
 void LiftoffAssembler::emit_i32_set_cond(LiftoffCondition liftoff_cond,
                                          Register dst, Register lhs,
                                          Register rhs) {
-  bailout(kUnsupportedArchitecture, "emit_i32_set_cond");
+  bool use_signed = liftoff::UseSignedOp(liftoff_cond);
+  if (use_signed) {
+    cmpw(lhs, rhs);
+  } else {
+    cmplw(lhs, rhs);
+  }
+  Label done;
+  mov(dst, Operand(1));
+  b(liftoff::ToCondition(liftoff_cond), &done);
+  mov(dst, Operand::Zero());
+  bind(&done);
 }
 
 void LiftoffAssembler::emit_i64_eqz(Register dst, LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_i64_eqz");
+  Label done;
+  cmpi(src.gp(), Operand(0));
+  mov(dst, Operand(1));
+  beq(&done);
+  mov(dst, Operand::Zero());
+  bind(&done);
 }
 
 void LiftoffAssembler::emit_i64_set_cond(LiftoffCondition liftoff_cond,
                                          Register dst, LiftoffRegister lhs,
                                          LiftoffRegister rhs) {
-  bailout(kUnsupportedArchitecture, "emit_i64_set_cond");
+  bool use_signed = liftoff::UseSignedOp(liftoff_cond);
+  if (use_signed) {
+    cmp(lhs.gp(), rhs.gp());
+  } else {
+    cmpl(lhs.gp(), rhs.gp());
+  }
+  Label done;
+  mov(dst, Operand(1));
+  b(liftoff::ToCondition(liftoff_cond), &done);
+  mov(dst, Operand::Zero());
+  bind(&done);
 }
 
 void LiftoffAssembler::emit_f32_set_cond(LiftoffCondition liftoff_cond,
                                          Register dst, DoubleRegister lhs,
                                          DoubleRegister rhs) {
-  bailout(kUnsupportedArchitecture, "emit_f32_set_cond");
+  fcmpu(lhs, rhs);
+  Label done;
+  mov(dst, Operand(1));
+  b(liftoff::ToCondition(liftoff_cond), &done);
+  mov(dst, Operand::Zero());
+  bind(&done);
 }
 
 void LiftoffAssembler::emit_f64_set_cond(LiftoffCondition liftoff_cond,
                                          Register dst, DoubleRegister lhs,
                                          DoubleRegister rhs) {
-  bailout(kUnsupportedArchitecture, "emit_f64_set_cond");
+  emit_f32_set_cond(liftoff_cond, dst, lhs, rhs);
 }
 
 bool LiftoffAssembler::emit_select(LiftoffRegister dst, Register condition,
@@ -1800,6 +1981,8 @@ void LiftoffAssembler::AllocateStackSlot(Register addr, uint32_t size) {
 void LiftoffAssembler::DeallocateStackSlot(uint32_t size) {
   bailout(kUnsupportedArchitecture, "DeallocateStackSlot");
 }
+
+void LiftoffAssembler::MaybeOSR() {}
 
 void LiftoffStackSlots::Construct(int param_slots) {
   asm_->bailout(kUnsupportedArchitecture, "LiftoffStackSlots::Construct");

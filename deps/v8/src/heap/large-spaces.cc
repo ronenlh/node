@@ -5,6 +5,7 @@
 #include "src/heap/large-spaces.h"
 
 #include "src/base/platform/mutex.h"
+#include "src/base/sanitizer/msan.h"
 #include "src/common/globals.h"
 #include "src/execution/isolate.h"
 #include "src/heap/combined-heap.h"
@@ -18,7 +19,6 @@
 #include "src/heap/spaces-inl.h"
 #include "src/logging/log.h"
 #include "src/objects/objects-inl.h"
-#include "src/sanitizer/msan.h"
 #include "src/utils/ostreams.h"
 
 namespace v8 {
@@ -130,6 +130,7 @@ AllocationResult OldLargeObjectSpace::AllocateRaw(int object_size) {
 
 AllocationResult OldLargeObjectSpace::AllocateRaw(int object_size,
                                                   Executability executable) {
+  DCHECK(!FLAG_enable_third_party_heap);
   // Check if we want to force a GC before growing the old space further.
   // If so, fail the allocation.
   if (!heap()->CanExpandOldGeneration(object_size) ||
@@ -141,7 +142,7 @@ AllocationResult OldLargeObjectSpace::AllocateRaw(int object_size,
   if (page == nullptr) return AllocationResult::Retry(identity());
   page->SetOldGenerationPageFlags(heap()->incremental_marking()->IsMarking());
   HeapObject object = page->GetObject();
-  pending_object_.store(object.address(), std::memory_order_release);
+  UpdatePendingObject(object);
   heap()->StartIncrementalMarkingIfAllocationLimitIsReached(
       heap()->GCFlagsForIncrementalMarking(),
       kGCCallbackScheduleIdleGarbageCollection);
@@ -160,6 +161,7 @@ AllocationResult OldLargeObjectSpace::AllocateRaw(int object_size,
 
 AllocationResult OldLargeObjectSpace::AllocateRawBackground(
     LocalHeap* local_heap, int object_size) {
+  DCHECK(!FLAG_enable_third_party_heap);
   // Check if we want to force a GC before growing the old space further.
   // If so, fail the allocation.
   if (!heap()->CanExpandOldGenerationBackground(local_heap, object_size) ||
@@ -435,6 +437,11 @@ void LargeObjectSpace::Print() {
 }
 #endif  // DEBUG
 
+void LargeObjectSpace::UpdatePendingObject(HeapObject object) {
+  base::SharedMutexGuard<base::kExclusive> guard(&pending_allocation_mutex_);
+  pending_object_.store(object.address(), std::memory_order_release);
+}
+
 OldLargeObjectSpace::OldLargeObjectSpace(Heap* heap)
     : LargeObjectSpace(heap, LO_SPACE) {}
 
@@ -446,6 +453,7 @@ NewLargeObjectSpace::NewLargeObjectSpace(Heap* heap, size_t capacity)
       capacity_(capacity) {}
 
 AllocationResult NewLargeObjectSpace::AllocateRaw(int object_size) {
+  DCHECK(!FLAG_enable_third_party_heap);
   // Do not allocate more objects if promoting the existing object would exceed
   // the old generation capacity.
   if (!heap()->CanExpandOldGeneration(SizeOfObjects())) {
@@ -466,7 +474,7 @@ AllocationResult NewLargeObjectSpace::AllocateRaw(int object_size) {
   HeapObject result = page->GetObject();
   page->SetYoungGenerationPageFlags(heap()->incremental_marking()->IsMarking());
   page->SetFlag(MemoryChunk::TO_PAGE);
-  pending_object_.store(result.address(), std::memory_order_release);
+  UpdatePendingObject(result);
 #ifdef ENABLE_MINOR_MC
   if (FLAG_minor_mc) {
     page->AllocateYoungGenerationBitmap();
@@ -532,6 +540,7 @@ CodeLargeObjectSpace::CodeLargeObjectSpace(Heap* heap)
       chunk_map_(kInitialChunkMapCapacity) {}
 
 AllocationResult CodeLargeObjectSpace::AllocateRaw(int object_size) {
+  DCHECK(!FLAG_enable_third_party_heap);
   return OldLargeObjectSpace::AllocateRaw(object_size, EXECUTABLE);
 }
 

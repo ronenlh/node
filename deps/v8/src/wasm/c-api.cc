@@ -22,6 +22,7 @@
 #include "src/wasm/c-api.h"
 
 #include <cstring>
+#include <iomanip>
 #include <iostream>
 
 #include "include/libplatform/libplatform.h"
@@ -44,6 +45,10 @@
 #ifdef WASM_API_DEBUG
 #error "WASM_API_DEBUG is unsupported"
 #endif
+
+// If you want counters support (what --dump-counters does for the d8 shell),
+// then set this to 1 (in here, or via -DDUMP_COUNTERS=1 compiler argument).
+#define DUMP_COUNTERS 0
 
 namespace wasm {
 
@@ -227,23 +232,153 @@ auto Config::make() -> own<Config> {
 
 // Engine
 
+#if DUMP_COUNTERS
+class Counter {
+ public:
+  static const int kMaxNameSize = 64;
+  int32_t* Bind(const char* name, bool is_histogram) {
+    int i;
+    for (i = 0; i < kMaxNameSize - 1 && name[i]; i++) {
+      name_[i] = static_cast<char>(name[i]);
+    }
+    name_[i] = '\0';
+    is_histogram_ = is_histogram;
+    return ptr();
+  }
+  int32_t* ptr() { return &count_; }
+  int32_t count() { return count_; }
+  int32_t sample_total() { return sample_total_; }
+  bool is_histogram() { return is_histogram_; }
+  void AddSample(int32_t sample) {
+    count_++;
+    sample_total_ += sample;
+  }
+
+ private:
+  int32_t count_;
+  int32_t sample_total_;
+  bool is_histogram_;
+  uint8_t name_[kMaxNameSize];
+};
+
+class CounterCollection {
+ public:
+  CounterCollection() = default;
+  Counter* GetNextCounter() {
+    if (counters_in_use_ == kMaxCounters) return nullptr;
+    return &counters_[counters_in_use_++];
+  }
+
+ private:
+  static const unsigned kMaxCounters = 512;
+  uint32_t counters_in_use_{0};
+  Counter counters_[kMaxCounters];
+};
+
+using CounterMap = std::unordered_map<std::string, Counter*>;
+
+#endif
+
 struct EngineImpl {
   static bool created;
 
   std::unique_ptr<v8::Platform> platform;
 
+#if DUMP_COUNTERS
+  static CounterCollection counters_;
+  static CounterMap* counter_map_;
+
+  static Counter* GetCounter(const char* name, bool is_histogram) {
+    auto map_entry = counter_map_->find(name);
+    Counter* counter =
+        map_entry != counter_map_->end() ? map_entry->second : nullptr;
+
+    if (counter == nullptr) {
+      counter = counters_.GetNextCounter();
+      if (counter != nullptr) {
+        (*counter_map_)[name] = counter;
+        counter->Bind(name, is_histogram);
+      }
+    } else {
+      DCHECK(counter->is_histogram() == is_histogram);
+    }
+    return counter;
+  }
+
+  static int* LookupCounter(const char* name) {
+    Counter* counter = GetCounter(name, false);
+
+    if (counter != nullptr) {
+      return counter->ptr();
+    } else {
+      return nullptr;
+    }
+  }
+
+  static void* CreateHistogram(const char* name, int min, int max,
+                               size_t buckets) {
+    return GetCounter(name, true);
+  }
+
+  static void AddHistogramSample(void* histogram, int sample) {
+    Counter* counter = reinterpret_cast<Counter*>(histogram);
+    counter->AddSample(sample);
+  }
+#endif
+
   EngineImpl() {
     assert(!created);
     created = true;
+#if DUMP_COUNTERS
+    counter_map_ = new CounterMap();
+#endif
   }
 
   ~EngineImpl() {
+#if DUMP_COUNTERS
+    std::vector<std::pair<std::string, Counter*>> counters(
+        counter_map_->begin(), counter_map_->end());
+    std::sort(counters.begin(), counters.end());
+    // Dump counters in formatted boxes.
+    constexpr int kNameBoxSize = 64;
+    constexpr int kValueBoxSize = 13;
+    std::cout << "+" << std::string(kNameBoxSize, '-') << "+"
+              << std::string(kValueBoxSize, '-') << "+\n";
+    std::cout << "| Name" << std::string(kNameBoxSize - 5, ' ') << "| Value"
+              << std::string(kValueBoxSize - 6, ' ') << "|\n";
+    std::cout << "+" << std::string(kNameBoxSize, '-') << "+"
+              << std::string(kValueBoxSize, '-') << "+\n";
+    for (const auto& pair : counters) {
+      std::string key = pair.first;
+      Counter* counter = pair.second;
+      if (counter->is_histogram()) {
+        std::cout << "| c:" << std::setw(kNameBoxSize - 4) << std::left << key
+                  << " | " << std::setw(kValueBoxSize - 2) << std::right
+                  << counter->count() << " |\n";
+        std::cout << "| t:" << std::setw(kNameBoxSize - 4) << std::left << key
+                  << " | " << std::setw(kValueBoxSize - 2) << std::right
+                  << counter->sample_total() << " |\n";
+      } else {
+        std::cout << "| " << std::setw(kNameBoxSize - 2) << std::left << key
+                  << " | " << std::setw(kValueBoxSize - 2) << std::right
+                  << counter->count() << " |\n";
+      }
+    }
+    std::cout << "+" << std::string(kNameBoxSize, '-') << "+"
+              << std::string(kValueBoxSize, '-') << "+\n";
+    delete counter_map_;
+#endif
     v8::V8::Dispose();
     v8::V8::ShutdownPlatform();
   }
 };
 
 bool EngineImpl::created = false;
+
+#if DUMP_COUNTERS
+CounterCollection EngineImpl::counters_;
+CounterMap* EngineImpl::counter_map_;
+#endif
 
 template <>
 struct implement<Engine> {
@@ -257,13 +392,23 @@ void Engine::operator delete(void* p) { ::operator delete(p); }
 auto Engine::make(own<Config>&& config) -> own<Engine> {
   i::FLAG_expose_gc = true;
   i::FLAG_experimental_wasm_reftypes = true;
-  i::FLAG_experimental_wasm_mv = true;
   auto engine = new (std::nothrow) EngineImpl;
   if (!engine) return own<Engine>();
   engine->platform = v8::platform::NewDefaultPlatform();
   v8::V8::InitializePlatform(engine->platform.get());
   v8::V8::Initialize();
   return make_own(seal<Engine>(engine));
+}
+
+// This should be called somewhat regularly, especially on potentially hot
+// sections of pure C++ execution. To achieve that, we call it on API entry
+// points that heap-allocate but don't call into generated code.
+// For example, finalization of incremental marking is relying on it.
+void CheckAndHandleInterrupts(i::Isolate* isolate) {
+  i::StackLimitCheck check(isolate);
+  if (check.InterruptRequested()) {
+    isolate->stack_guard()->HandleInterrupts();
+  }
 }
 
 // Stores
@@ -327,6 +472,12 @@ auto Store::make(Engine*) -> own<Store> {
   // Create isolate.
   store->create_params_.array_buffer_allocator =
       v8::ArrayBuffer::Allocator::NewDefaultAllocator();
+#if DUMP_COUNTERS
+  store->create_params_.counter_lookup_callback = EngineImpl::LookupCounter;
+  store->create_params_.create_histogram_callback = EngineImpl::CreateHistogram;
+  store->create_params_.add_histogram_sample_callback =
+      EngineImpl::AddHistogramSample;
+#endif
   v8::Isolate* isolate = v8::Isolate::New(store->create_params_);
   if (!isolate) return own<Store>();
   store->isolate_ = isolate;
@@ -456,8 +607,7 @@ struct FuncTypeImpl : ExternTypeImpl {
   ownvec<ValType> params;
   ownvec<ValType> results;
 
-  FuncTypeImpl(ownvec<ValType>& params,   // NOLINT(runtime/references)
-               ownvec<ValType>& results)  // NOLINT(runtime/references)
+  FuncTypeImpl(ownvec<ValType>& params, ownvec<ValType>& results)
       : ExternTypeImpl(EXTERN_FUNC),
         params(std::move(params)),
         results(std::move(results)) {}
@@ -508,8 +658,7 @@ struct GlobalTypeImpl : ExternTypeImpl {
   own<ValType> content;
   Mutability mutability;
 
-  GlobalTypeImpl(own<ValType>& content,  // NOLINT(runtime/references)
-                 Mutability mutability)
+  GlobalTypeImpl(own<ValType>& content, Mutability mutability)
       : ExternTypeImpl(EXTERN_GLOBAL),
         content(std::move(content)),
         mutability(mutability) {}
@@ -561,8 +710,7 @@ struct TableTypeImpl : ExternTypeImpl {
   own<ValType> element;
   Limits limits;
 
-  TableTypeImpl(own<ValType>& element,  // NOLINT(runtime/references)
-                Limits limits)
+  TableTypeImpl(own<ValType>& element, Limits limits)
       : ExternTypeImpl(EXTERN_TABLE),
         element(std::move(element)),
         limits(limits) {}
@@ -653,9 +801,7 @@ struct ImportTypeImpl {
   Name name;
   own<ExternType> type;
 
-  ImportTypeImpl(Name& module,           // NOLINT(runtime/references)
-                 Name& name,             // NOLINT(runtime/references)
-                 own<ExternType>& type)  // NOLINT(runtime/references)
+  ImportTypeImpl(Name& module, Name& name, own<ExternType>& type)
       : module(std::move(module)),
         name(std::move(name)),
         type(std::move(type)) {}
@@ -696,8 +842,7 @@ struct ExportTypeImpl {
   Name name;
   own<ExternType> type;
 
-  ExportTypeImpl(Name& name,             // NOLINT(runtime/references)
-                 own<ExternType>& type)  // NOLINT(runtime/references)
+  ExportTypeImpl(Name& name, own<ExternType>& type)
       : name(std::move(name)), type(std::move(type)) {}
 };
 
@@ -976,6 +1121,7 @@ auto Module::make(Store* store_abs, const vec<byte_t>& binary) -> own<Module> {
   StoreImpl* store = impl(store_abs);
   i::Isolate* isolate = store->i_isolate();
   i::HandleScope scope(isolate);
+  CheckAndHandleInterrupts(isolate);
   i::wasm::ModuleWireBytes bytes(
       {reinterpret_cast<const uint8_t*>(binary.get()), binary.size()});
   i::wasm::WasmFeatures features = i::wasm::WasmFeatures::FromIsolate(isolate);
@@ -1279,11 +1425,14 @@ auto make_func(Store* store_abs, FuncData* data) -> own<Func> {
   auto store = impl(store_abs);
   i::Isolate* isolate = store->i_isolate();
   i::HandleScope handle_scope(isolate);
+  CheckAndHandleInterrupts(isolate);
   i::Handle<i::Managed<FuncData>> embedder_data =
       i::Managed<FuncData>::FromRawPtr(isolate, sizeof(FuncData), data);
   i::Handle<i::WasmCapiFunction> function = i::WasmCapiFunction::New(
       isolate, reinterpret_cast<i::Address>(&FuncData::v8_callback),
       embedder_data, SignatureHelper::Serialize(isolate, data->type.get()));
+  i::Tuple2::cast(function->shared().wasm_capi_function_data().ref())
+      .set_value2(*function);
   auto func = implement<Func>::type::make(store, function);
   return func;
 }
@@ -1357,26 +1506,6 @@ i::Handle<i::Object> WasmRefToV8(i::Isolate* isolate, const Ref* ref) {
   return impl(ref)->v8_object();
 }
 
-i::Handle<i::Object> CallTargetForCaching(i::Isolate* isolate,
-                                          i::Address real_call_target) {
-  if (i::kTaggedSize == i::kInt32Size) {
-    return isolate->factory()->NewForeign(real_call_target);
-  } else {
-    // 64-bit uncompressed platform.
-    return i::handle(i::Smi((real_call_target << i::kSmiTagSize) | i::kSmiTag),
-                     isolate);
-  }
-}
-
-i::Address CallTargetFromCache(i::Object cached_call_target) {
-  if (i::kTaggedSize == i::kInt32Size) {
-    return i::Foreign::cast(cached_call_target).foreign_address();
-  } else {
-    // 64-bit uncompressed platform.
-    return cached_call_target.ptr() >> i::kSmiTagSize;
-  }
-}
-
 void PrepareFunctionData(i::Isolate* isolate,
                          i::Handle<i::WasmExportedFunctionData> function_data,
                          const i::wasm::FunctionSig* sig,
@@ -1390,12 +1519,6 @@ void PrepareFunctionData(i::Isolate* isolate,
   // Compute packed args size.
   function_data->set_packed_args_size(
       i::wasm::CWasmArgumentsPacker::TotalSize(sig));
-  // Get call target (function table offset), and wrap it as a cacheable object
-  // (pseudo-Smi or Foreign, depending on platform).
-  i::Handle<i::Object> call_target = CallTargetForCaching(
-      isolate,
-      function_data->instance().GetCallTarget(function_data->function_index()));
-  function_data->set_wasm_call_target(*call_target);
 }
 
 void PushArgs(const i::wasm::FunctionSig* sig, const Val args[],
@@ -1532,8 +1655,7 @@ auto Func::call(const Val args[], Val results[]) const -> own<Trap> {
   PrepareFunctionData(isolate, function_data, sig, instance->module());
   i::Handle<i::Code> wrapper_code = i::Handle<i::Code>(
       i::Code::cast(function_data->c_wrapper_code()), isolate);
-  i::Address call_target =
-      CallTargetFromCache(function_data->wasm_call_target());
+  i::Address call_target = function_data->foreign_address();
 
   i::wasm::CWasmArgumentsPacker packer(function_data->packed_args_size());
   PushArgs(sig, args, &packer, store);
@@ -1682,6 +1804,7 @@ auto Global::make(Store* store_abs, const GlobalType* type, const Val& val)
   StoreImpl* store = impl(store_abs);
   i::Isolate* isolate = store->i_isolate();
   i::HandleScope handle_scope(isolate);
+  CheckAndHandleInterrupts(isolate);
 
   DCHECK_EQ(type->content()->kind(), val.kind());
 
@@ -1783,6 +1906,7 @@ auto Table::make(Store* store_abs, const TableType* type, const Ref* ref)
   StoreImpl* store = impl(store_abs);
   i::Isolate* isolate = store->i_isolate();
   i::HandleScope scope(isolate);
+  CheckAndHandleInterrupts(isolate);
 
   // Get "element".
   i::wasm::ValueType i_type;
@@ -1902,6 +2026,7 @@ auto Memory::make(Store* store_abs, const MemoryType* type) -> own<Memory> {
   StoreImpl* store = impl(store_abs);
   i::Isolate* isolate = store->i_isolate();
   i::HandleScope scope(isolate);
+  CheckAndHandleInterrupts(isolate);
 
   const Limits& limits = type->limits();
   uint32_t minimum = limits.min;
@@ -1972,6 +2097,7 @@ own<Instance> Instance::make(Store* store_abs, const Module* module_abs,
   const implement<Module>::type* module = impl(module_abs);
   i::Isolate* isolate = store->i_isolate();
   i::HandleScope handle_scope(isolate);
+  CheckAndHandleInterrupts(isolate);
 
   DCHECK_EQ(module->v8_object()->GetIsolate(), isolate);
 
@@ -2041,6 +2167,7 @@ auto Instance::exports() const -> ownvec<Extern> {
   StoreImpl* store = instance->store();
   i::Isolate* isolate = store->i_isolate();
   i::HandleScope handle_scope(isolate);
+  CheckAndHandleInterrupts(isolate);
   i::Handle<i::WasmInstanceObject> instance_obj = instance->v8_object();
   i::Handle<i::WasmModuleObject> module_obj(instance_obj->module_object(),
                                             isolate);

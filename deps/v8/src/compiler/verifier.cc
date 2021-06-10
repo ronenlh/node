@@ -251,13 +251,26 @@ void Verifier::Visitor::Check(Node* node, const AllNodes& all) {
   }
 
   switch (node->opcode()) {
-    case IrOpcode::kStart:
+    case IrOpcode::kStart: {
       // Start has no inputs.
       CHECK_EQ(0, input_count);
       // Type is a tuple.
       // TODO(rossberg): Multiple outputs are currently typed as Internal.
       CheckTypeIs(node, Type::Internal());
+      // Check that parameters are unique. We need this because the register
+      // allocator gets confused when there are two identical parameters which
+      // are both hard-assigned to the same register (such as the instance
+      // parameter in wasm).
+      std::unordered_set<int> param_indices;
+      for (Node* use : node->uses()) {
+        if (all.IsLive(use) && use->opcode() == IrOpcode::kParameter) {
+          int index = ParameterIndexOf(use->op());
+          CHECK_EQ(param_indices.count(index), 0);
+          param_indices.insert(index);
+        }
+      }
       break;
+    }
     case IrOpcode::kEnd:
       // End has no outputs.
       CHECK_EQ(0, node->op()->ValueOutputCount());
@@ -482,8 +495,8 @@ void Verifier::Visitor::Check(Node* node, const AllNodes& all) {
       Node* control = NodeProperties::GetControlInput(node, 0);
       CHECK_EQ(effect_count, control->op()->ControlInputCount());
       CHECK_EQ(input_count, 1 + effect_count);
-      // If the control input is a Merge, then make sure that at least one
-      // of it's usages is non-phi.
+      // If the control input is a Merge, then make sure that at least one of
+      // its usages is non-phi.
       if (control->opcode() == IrOpcode::kMerge) {
         bool non_phi_use_found = false;
         for (Node* use : control->uses()) {
@@ -954,8 +967,8 @@ void Verifier::Visitor::Check(Node* node, const AllNodes& all) {
     case IrOpcode::kSpeculativeBigIntNegate:
       CheckTypeIs(node, Type::BigInt());
       break;
-    case IrOpcode::kBigIntAsUintN:
-      CheckValueInputIs(node, 0, Type::BigInt());
+    case IrOpcode::kSpeculativeBigIntAsUintN:
+      CheckValueInputIs(node, 0, Type::Any());
       CheckTypeIs(node, Type::BigInt());
       break;
     case IrOpcode::kBigIntAdd:
@@ -1498,6 +1511,7 @@ void Verifier::Visitor::Check(Node* node, const AllNodes& all) {
     case IrOpcode::kCheckedTaggedToTaggedPointer:
     case IrOpcode::kCheckedTruncateTaggedToWord32:
     case IrOpcode::kAssertType:
+    case IrOpcode::kVerifyType:
       break;
 
     case IrOpcode::kCheckFloat64Hole:
@@ -1658,8 +1672,12 @@ void Verifier::Visitor::Check(Node* node, const AllNodes& all) {
     case IrOpcode::kWord64Rol:
     case IrOpcode::kWord64Ror:
     case IrOpcode::kWord64Clz:
-    case IrOpcode::kWord64Popcnt:
     case IrOpcode::kWord64Ctz:
+    case IrOpcode::kWord64RolLowerable:
+    case IrOpcode::kWord64RorLowerable:
+    case IrOpcode::kWord64ClzLowerable:
+    case IrOpcode::kWord64CtzLowerable:
+    case IrOpcode::kWord64Popcnt:
     case IrOpcode::kWord64ReverseBits:
     case IrOpcode::kWord64ReverseBytes:
     case IrOpcode::kSimd128ReverseBytes:
@@ -1791,6 +1809,8 @@ void Verifier::Visitor::Check(Node* node, const AllNodes& all) {
     case IrOpcode::kFloat64ExtractHighWord32:
     case IrOpcode::kFloat64InsertLowWord32:
     case IrOpcode::kFloat64InsertHighWord32:
+    case IrOpcode::kWord32Select:
+    case IrOpcode::kWord64Select:
     case IrOpcode::kFloat32Select:
     case IrOpcode::kFloat64Select:
     case IrOpcode::kInt32PairAdd:
@@ -1850,7 +1870,7 @@ void Verifier::Visitor::Check(Node* node, const AllNodes& all) {
       // TODO(rossberg): Check.
       break;
   }
-}  // NOLINT(readability/fn_size)
+}
 
 void Verifier::Run(Graph* graph, Typing typing, CheckInputs check_inputs,
                    CodeType code_type) {

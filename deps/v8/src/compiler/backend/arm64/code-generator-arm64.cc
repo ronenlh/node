@@ -282,19 +282,17 @@ class OutOfLineRecordWrite final : public OutOfLineCode {
   }
 
   void Generate() final {
-    if (mode_ > RecordWriteMode::kValueIsPointer) {
-      __ JumpIfSmi(value_, exit());
-    }
     if (COMPRESS_POINTERS_BOOL) {
       __ DecompressTaggedPointer(value_, value_);
     }
     __ CheckPageFlag(value_, MemoryChunk::kPointersToHereAreInterestingMask, ne,
                      exit());
     RememberedSetAction const remembered_set_action =
-        mode_ > RecordWriteMode::kValueIsMap ? EMIT_REMEMBERED_SET
-                                             : OMIT_REMEMBERED_SET;
-    SaveFPRegsMode const save_fp_mode =
-        frame()->DidAllocateDoubleRegisters() ? kSaveFPRegs : kDontSaveFPRegs;
+        mode_ > RecordWriteMode::kValueIsMap ? RememberedSetAction::kEmit
+                                             : RememberedSetAction::kOmit;
+    SaveFPRegsMode const save_fp_mode = frame()->DidAllocateDoubleRegisters()
+                                            ? SaveFPRegsMode::kSave
+                                            : SaveFPRegsMode::kIgnore;
     if (must_save_lr_) {
       // We need to save and restore lr if the frame was elided.
       __ Push<TurboAssembler::kSignLR>(lr, padreg);
@@ -307,12 +305,13 @@ class OutOfLineRecordWrite final : public OutOfLineCode {
       // A direct call to a wasm runtime stub defined in this module.
       // Just encode the stub index. This will be patched when the code
       // is added to the native module and copied into wasm code space.
-      __ CallRecordWriteStub(object_, offset_, remembered_set_action,
-                             save_fp_mode, wasm::WasmCode::kRecordWrite);
+      __ CallRecordWriteStubSaveRegisters(object_, offset_,
+                                          remembered_set_action, save_fp_mode,
+                                          StubCallMode::kCallWasmRuntimeStub);
 #endif  // V8_ENABLE_WEBASSEMBLY
     } else {
-      __ CallRecordWriteStub(object_, offset_, remembered_set_action,
-                             save_fp_mode);
+      __ CallRecordWriteStubSaveRegisters(object_, offset_,
+                                          remembered_set_action, save_fp_mode);
     }
     if (must_save_lr_) {
       __ Pop<TurboAssembler::kAuthLR>(padreg, lr);
@@ -859,7 +858,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArchSaveCallerRegisters: {
       fp_mode_ =
           static_cast<SaveFPRegsMode>(MiscField::decode(instr->opcode()));
-      DCHECK(fp_mode_ == kDontSaveFPRegs || fp_mode_ == kSaveFPRegs);
+      DCHECK(fp_mode_ == SaveFPRegsMode::kIgnore ||
+             fp_mode_ == SaveFPRegsMode::kSave);
       // kReturnRegister0 should have been saved before entering the stub.
       int bytes = __ PushCallerSaved(fp_mode_, kReturnRegister0);
       DCHECK(IsAligned(bytes, kSystemPointerSize));
@@ -872,7 +872,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArchRestoreCallerRegisters: {
       DCHECK(fp_mode_ ==
              static_cast<SaveFPRegsMode>(MiscField::decode(instr->opcode())));
-      DCHECK(fp_mode_ == kDontSaveFPRegs || fp_mode_ == kSaveFPRegs);
+      DCHECK(fp_mode_ == SaveFPRegsMode::kIgnore ||
+             fp_mode_ == SaveFPRegsMode::kSave);
       // Don't overwrite the returned value.
       int bytes = __ PopCallerSaved(fp_mode_, kReturnRegister0);
       frame_access_state()->IncreaseSPDelta(-(bytes / kSystemPointerSize));
@@ -941,9 +942,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         // We don't actually want to generate a pile of code for this, so just
         // claim there is a stack frame, without generating one.
         FrameScope scope(tasm(), StackFrame::NONE);
-        __ Call(
-            isolate()->builtins()->builtin_handle(Builtins::kAbortCSAAssert),
-            RelocInfo::CODE_TARGET);
+        __ Call(isolate()->builtins()->builtin_handle(Builtin::kAbortCSAAssert),
+                RelocInfo::CODE_TARGET);
       }
       __ Debug("kArchAbortCSAAssert", 0, BREAK);
       unwinding_info_writer_.MarkBlockWillExit();
@@ -1026,6 +1026,9 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
           this, object, offset, value, mode, DetermineStubCallMode(),
           &unwinding_info_writer_);
       __ StoreTaggedField(value, MemOperand(object, offset));
+      if (mode > RecordWriteMode::kValueIsPointer) {
+        __ JumpIfSmi(value, ool->exit());
+      }
       __ CheckPageFlag(object, MemoryChunk::kPointersFromHereAreInterestingMask,
                        eq, ool->entry());
       __ Bind(ool->exit());
@@ -1199,6 +1202,14 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArm64Mul32:
       __ Mul(i.OutputRegister32(), i.InputRegister32(0), i.InputRegister32(1));
       break;
+    case kArm64Sadalp: {
+      DCHECK_EQ(i.OutputSimd128Register(), i.InputSimd128Register(0));
+      VectorFormat dst_f = VectorFormatFillQ(LaneSizeField::decode(opcode));
+      VectorFormat src_f = VectorFormatHalfWidthDoubleLanes(dst_f);
+      __ Sadalp(i.OutputSimd128Register().Format(dst_f),
+                i.InputSimd128Register(1).Format(src_f));
+      break;
+    }
     case kArm64Saddlp: {
       VectorFormat dst_f = VectorFormatFillQ(LaneSizeField::decode(opcode));
       VectorFormat src_f = VectorFormatHalfWidthDoubleLanes(dst_f);
@@ -2862,7 +2873,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       SIMD_REDUCE_OP_CASE(kArm64I8x16AllTrue, Uminv, kFormatB, 16B);
   }
   return kSuccess;
-}  // NOLINT(readability/fn_size)
+}
 
 #undef SIMD_UNOP_CASE
 #undef SIMD_BINOP_CASE
@@ -2983,7 +2994,7 @@ void CodeGenerator::AssembleArchSelect(Instruction* instr,
                                        FlagsCondition condition) {
   Arm64OperandConverter i(this, instr);
   MachineRepresentation rep =
-    LocationOperand::cast(instr->OutputAt(0))->representation();
+      LocationOperand::cast(instr->OutputAt(0))->representation();
   Condition cc = FlagsConditionToCondition(condition);
   // We don't now how many inputs were consumed by the condition, so we have to
   // calculate the indices of the last two inputs.
@@ -3106,7 +3117,7 @@ void CodeGenerator::AssembleConstructFrame() {
       // unoptimized frame is still on the stack. Optimized code uses OSR values
       // directly from the unoptimized frame. Thus, all that needs to be done is
       // to allocate the remaining stack slots.
-      if (FLAG_code_comments) __ RecordComment("-- OSR entrypoint --");
+      __ RecordComment("-- OSR entrypoint --");
       osr_pc_offset_ = __ pc_offset();
       __ CodeEntry();
       size_t unoptimized_frame_slots = osr_helper()->UnoptimizedFrameSlots();
@@ -3269,8 +3280,6 @@ void CodeGenerator::AssembleReturn(InstructionOperand* additional_pop_count) {
 
   unwinding_info_writer_.MarkBlockWillExit();
 
-  // We might need x3 for scratch.
-  DCHECK_EQ(0u, call_descriptor->CalleeSavedRegisters() & x3.bit());
   const int parameter_slots =
       static_cast<int>(call_descriptor->ParameterSlotCount());
   Arm64OperandConverter g(this, nullptr);
@@ -3280,7 +3289,7 @@ void CodeGenerator::AssembleReturn(InstructionOperand* additional_pop_count) {
   if (parameter_slots != 0) {
     if (additional_pop_count->IsImmediate()) {
       DCHECK_EQ(g.ToConstant(additional_pop_count).ToInt32(), 0);
-    } else if (__ emit_debug_code()) {
+    } else if (FLAG_debug_code) {
       __ cmp(g.ToRegister(additional_pop_count), Operand(0));
       __ Assert(eq, AbortReason::kUnexpectedAdditionalPopValue);
     }
@@ -3291,9 +3300,9 @@ void CodeGenerator::AssembleReturn(InstructionOperand* additional_pop_count) {
   // If {parameter_slots} == 0, it means it is a builtin with
   // kDontAdaptArgumentsSentinel, which takes care of JS arguments popping
   // itself.
-  const bool drop_jsargs = frame_access_state()->has_frame() &&
-                           call_descriptor->IsJSFunctionCall() &&
-                           parameter_slots != 0;
+  const bool drop_jsargs = parameter_slots != 0 &&
+                           frame_access_state()->has_frame() &&
+                           call_descriptor->IsJSFunctionCall();
   if (call_descriptor->IsCFunctionCall()) {
     AssembleDeconstructFrame();
   } else if (frame_access_state()->has_frame()) {
@@ -3310,6 +3319,7 @@ void CodeGenerator::AssembleReturn(InstructionOperand* additional_pop_count) {
     }
     if (drop_jsargs) {
       // Get the actual argument count.
+      DCHECK_EQ(0u, call_descriptor->CalleeSavedRegisters() & argc_reg.bit());
       __ Ldr(argc_reg, MemOperand(fp, StandardFrameConstants::kArgCOffset));
     }
     AssembleDeconstructFrame();
@@ -3319,6 +3329,7 @@ void CodeGenerator::AssembleReturn(InstructionOperand* additional_pop_count) {
     // We must pop all arguments from the stack (including the receiver). This
     // number of arguments is given by max(1 + argc_reg, parameter_slots).
     Label argc_reg_has_final_count;
+    DCHECK_EQ(0u, call_descriptor->CalleeSavedRegisters() & argc_reg.bit());
     __ Add(argc_reg, argc_reg, 1);  // Consider the receiver.
     if (parameter_slots > 1) {
       __ Cmp(argc_reg, Operand(parameter_slots));
@@ -3376,12 +3387,12 @@ void CodeGenerator::PrepareForDeoptimizationExits(
     __ bind(&jump_deoptimization_entry_labels_[i]);
     DeoptimizeKind kind = static_cast<DeoptimizeKind>(i);
     if (kind == DeoptimizeKind::kEagerWithResume) {
-      __ LoadEntryFromBuiltinIndex(
+      __ LoadEntryFromBuiltin(
           Deoptimizer::GetDeoptWithResumeBuiltin(eager_with_resume_reason),
           scratch);
     } else {
-      __ LoadEntryFromBuiltinIndex(Deoptimizer::GetDeoptimizationEntry(kind),
-                                   scratch);
+      __ LoadEntryFromBuiltin(Deoptimizer::GetDeoptimizationEntry(kind),
+                              scratch);
     }
     __ Jump(scratch);
   }

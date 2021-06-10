@@ -304,8 +304,6 @@ class JSObject : public TorqueGeneratedJSObject<JSObject, JSReceiver> {
       Handle<JSFunction> constructor, Handle<JSReceiver> new_target,
       Handle<AllocationSite> site);
 
-  static MaybeHandle<NativeContext> GetFunctionRealm(Handle<JSObject> object);
-
   // 9.1.12 ObjectCreate ( proto [ , internalSlotsList ] )
   // Notice: This is NOT 19.1.2.2 Object.create ( O, Properties )
   static V8_WARN_UNUSED_RESULT MaybeHandle<JSObject> ObjectCreate(
@@ -440,10 +438,9 @@ class JSObject : public TorqueGeneratedJSObject<JSObject, JSReceiver> {
                           const char* name, Handle<Object> value,
                           PropertyAttributes attributes);
 
-  V8_EXPORT_PRIVATE static void AddDataElement(Handle<JSObject> receiver,
-                                               uint32_t index,
-                                               Handle<Object> value,
-                                               PropertyAttributes attributes);
+  V8_EXPORT_PRIVATE static Maybe<bool> AddDataElement(
+      Handle<JSObject> receiver, uint32_t index, Handle<Object> value,
+      PropertyAttributes attributes);
 
   // Extend the receiver with a single fast property appeared first in the
   // passed map. This also extends the property backing store if necessary.
@@ -620,7 +617,7 @@ class JSObject : public TorqueGeneratedJSObject<JSObject, JSReceiver> {
 
   // Forces a prototype without any of the checks that the regular SetPrototype
   // would do.
-  static void ForceSetPrototype(Handle<JSObject> object,
+  static void ForceSetPrototype(Isolate* isolate, Handle<JSObject> object,
                                 Handle<HeapObject> proto);
 
   // Convert the object to use the canonical dictionary
@@ -654,6 +651,9 @@ class JSObject : public TorqueGeneratedJSObject<JSObject, JSReceiver> {
   inline Object RawFastPropertyAt(FieldIndex index) const;
   inline Object RawFastPropertyAt(PtrComprCageBase cage_base,
                                   FieldIndex index) const;
+  // A specialized version of the above for use by TurboFan. Only supports
+  // in-object properties.
+  inline Object RawFastPropertyAt(FieldIndex index, RelaxedLoadTag) const;
 
   inline void FastPropertyAtPut(FieldIndex index, Object value,
                                 WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
@@ -680,11 +680,12 @@ class JSObject : public TorqueGeneratedJSObject<JSObject, JSReceiver> {
 
   // Initializes the body starting at |start_offset|. It is responsibility of
   // the caller to initialize object header. Fill the pre-allocated fields with
-  // pre_allocated_value and the rest with filler_value.
+  // undefined_value and the rest with filler_map.
   // Note: this call does not update write barrier, the caller is responsible
-  // to ensure that |filler_value| can be collected without WB here.
+  // to ensure that |filler_map| can be collected without WB here.
   inline void InitializeBody(Map map, int start_offset,
-                             Object pre_allocated_value, Object filler_value);
+                             bool is_slack_tracking_in_progress,
+                             MapWord filler_map, Object undefined_value);
 
   // Check whether this object references another object
   bool ReferencesObject(Object obj);
@@ -702,11 +703,11 @@ class JSObject : public TorqueGeneratedJSObject<JSObject, JSReceiver> {
   DECL_PRINTER(JSObject)
   DECL_VERIFIER(JSObject)
 #ifdef OBJECT_PRINT
-  bool PrintProperties(std::ostream& os);  // NOLINT
-  void PrintElements(std::ostream& os);    // NOLINT
+  bool PrintProperties(std::ostream& os);
+  void PrintElements(std::ostream& os);
 #endif
 #if defined(DEBUG) || defined(OBJECT_PRINT)
-  void PrintTransitions(std::ostream& os);  // NOLINT
+  void PrintTransitions(std::ostream& os);
 #endif
 
   static void PrintElementsTransition(FILE* file, Handle<JSObject> object,

@@ -177,8 +177,12 @@ PhiRepresentationOf(const Operator* const) V8_WARN_UNUSED_RESULT;
 // function. This class bundles the index and a debug name for such operators.
 class ParameterInfo final {
  public:
+  static constexpr int kMinIndex = Linkage::kJSCallClosureParamIndex;
+
   ParameterInfo(int index, const char* debug_name)
-      : index_(index), debug_name_(debug_name) {}
+      : index_(index), debug_name_(debug_name) {
+    DCHECK_LE(kMinIndex, index);
+  }
 
   int index() const { return index_; }
   const char* debug_name() const { return debug_name_; }
@@ -617,8 +621,8 @@ class FrameState : public CommonNodeWrapperBase {
     // test, among others). Also, outer_frame_state points at the start node
     // for non-inlined functions. This could be avoided by checking
     // has_outer_frame_state() before casting to FrameState.
-    CONSTEXPR_DCHECK(node->opcode() == IrOpcode::kFrameState ||
-                     node->opcode() == IrOpcode::kStart);
+    DCHECK(node->opcode() == IrOpcode::kFrameState ||
+           node->opcode() == IrOpcode::kStart);
   }
 
   FrameStateInfo frame_state_info() const {
@@ -668,7 +672,7 @@ class FrameState : public CommonNodeWrapperBase {
 class StartNode final : public CommonNodeWrapperBase {
  public:
   explicit constexpr StartNode(Node* node) : CommonNodeWrapperBase(node) {
-    CONSTEXPR_DCHECK(node->opcode() == IrOpcode::kStart);
+    DCHECK_EQ(IrOpcode::kStart, node->opcode());
   }
 
   // The receiver is counted as part of formal parameters.
@@ -687,10 +691,10 @@ class StartNode final : public CommonNodeWrapperBase {
                   kExtraOutputCount);
     // Checking related linkage methods here since they rely on Start node
     // layout.
-    CONSTEXPR_DCHECK(Linkage::kJSCallClosureParamIndex == -1);
-    CONSTEXPR_DCHECK(Linkage::GetJSCallNewTargetParamIndex(argc) == argc + 0);
-    CONSTEXPR_DCHECK(Linkage::GetJSCallArgCountParamIndex(argc) == argc + 1);
-    CONSTEXPR_DCHECK(Linkage::GetJSCallContextParamIndex(argc) == argc + 2);
+    DCHECK_EQ(-1, Linkage::kJSCallClosureParamIndex);
+    DCHECK_EQ(argc + 0, Linkage::GetJSCallNewTargetParamIndex(argc));
+    DCHECK_EQ(argc + 1, Linkage::GetJSCallArgCountParamIndex(argc));
+    DCHECK_EQ(argc + 2, Linkage::GetJSCallContextParamIndex(argc));
     return argc + kClosure + kNewTarget + kArgCount + kContext;
   }
 
@@ -773,8 +777,7 @@ class DynamicCheckMapsWithDeoptUnlessNode final : public CommonNodeWrapperBase {
  public:
   explicit constexpr DynamicCheckMapsWithDeoptUnlessNode(Node* node)
       : CommonNodeWrapperBase(node) {
-    CONSTEXPR_DCHECK(node->opcode() ==
-                     IrOpcode::kDynamicCheckMapsWithDeoptUnless);
+    DCHECK_EQ(IrOpcode::kDynamicCheckMapsWithDeoptUnless, node->opcode());
   }
 
 #define INPUTS(V)                   \

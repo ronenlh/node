@@ -38,8 +38,6 @@ enum RuntimeExceptionSupport : bool {
 
 enum UseTrapHandler : bool { kUseTrapHandler = true, kNoTrapHandler = false };
 
-enum LowerSimd : bool { kLowerSimd = true, kNoLowerSimd = false };
-
 // The {CompilationEnv} encapsulates the module data that is used during
 // compilation. CompilationEnvs are shareable across multiple compilations.
 struct CompilationEnv {
@@ -66,34 +64,25 @@ struct CompilationEnv {
   // Features enabled for this compilation.
   const WasmFeatures enabled_features;
 
-  const LowerSimd lower_simd;
-
-  // We assume that memories of size >= half of the virtual address space
-  // cannot be allocated (see https://crbug.com/1201340).
-  static constexpr uint32_t kMaxMemoryPagesAtRuntime = std::min(
-      kV8MaxWasmMemoryPages,
-      (uintptr_t{1} << (kSystemPointerSize == 4 ? 31 : 63)) / kWasmPageSize);
-
   constexpr CompilationEnv(const WasmModule* module,
                            UseTrapHandler use_trap_handler,
                            RuntimeExceptionSupport runtime_exception_support,
-                           const WasmFeatures& enabled_features,
-                           LowerSimd lower_simd = kNoLowerSimd)
+                           const WasmFeatures& enabled_features)
       : module(module),
         use_trap_handler(use_trap_handler),
         runtime_exception_support(runtime_exception_support),
         // During execution, the memory can never be bigger than what fits in a
         // uintptr_t.
-        min_memory_size(std::min(kMaxMemoryPagesAtRuntime,
-                                 module ? module->initial_pages : 0) *
-                        uint64_t{kWasmPageSize}),
-        max_memory_size(static_cast<uintptr_t>(
-            std::min(kMaxMemoryPagesAtRuntime,
-                     module && module->has_maximum_pages ? module->maximum_pages
-                                                         : max_mem_pages()) *
-            uint64_t{kWasmPageSize})),
-        enabled_features(enabled_features),
-        lower_simd(lower_simd) {}
+        min_memory_size(
+            std::min(kV8MaxWasmMemoryPages,
+                     uintptr_t{module ? module->initial_pages : 0}) *
+            kWasmPageSize),
+        max_memory_size((module && module->has_maximum_pages
+                             ? std::min(kV8MaxWasmMemoryPages,
+                                        uintptr_t{module->maximum_pages})
+                             : kV8MaxWasmMemoryPages) *
+                        kWasmPageSize),
+        enabled_features(enabled_features) {}
 };
 
 // The wire bytes are either owned by the StreamingDecoder, or (after streaming)
@@ -126,6 +115,8 @@ class V8_EXPORT_PRIVATE CompilationState {
   void InitCompileJob(WasmEngine*);
 
   void CancelCompilation();
+
+  void CancelInitialCompilation();
 
   void SetError();
 

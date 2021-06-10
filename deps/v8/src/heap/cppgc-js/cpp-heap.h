@@ -5,6 +5,11 @@
 #ifndef V8_HEAP_CPPGC_JS_CPP_HEAP_H_
 #define V8_HEAP_CPPGC_JS_CPP_HEAP_H_
 
+#if CPPGC_IS_STANDALONE
+static_assert(
+    false, "V8 targets can not be built with cppgc_is_standalone set to true.");
+#endif
+
 #include "include/v8-cppgc.h"
 #include "include/v8.h"
 #include "src/base/macros.h"
@@ -34,9 +39,7 @@ class V8_EXPORT_PRIVATE CppHeap final
   CppHeap(
       v8::Platform* platform,
       const std::vector<std::unique_ptr<cppgc::CustomSpaceBase>>& custom_spaces,
-      const v8::WrapperDescriptor& wrapper_descriptor,
-      std::unique_ptr<cppgc::internal::MetricRecorder> metric_recorder =
-          nullptr);
+      const v8::WrapperDescriptor& wrapper_descriptor);
   ~CppHeap() final;
 
   CppHeap(const CppHeap&) = delete;
@@ -55,6 +58,10 @@ class V8_EXPORT_PRIVATE CppHeap final
   void CollectGarbageForTesting(
       cppgc::internal::GarbageCollector::Config::StackState);
 
+  void CollectCustomSpaceStatisticsAtLastGC(
+      std::vector<cppgc::CustomSpaceIndex>,
+      std::unique_ptr<CustomSpaceStatisticsReceiver>);
+
   // v8::EmbedderHeapTracer interface.
   void RegisterV8References(
       const std::vector<std::pair<void*, void*> >& embedder_fields) final;
@@ -69,7 +76,24 @@ class V8_EXPORT_PRIVATE CppHeap final
   void AllocatedObjectSizeDecreased(size_t) final;
   void ResetAllocatedObjectSize(size_t) final {}
 
+  // The following 3 methods are only used for reporting nested cpp events
+  // through V8. Standalone events are reported directly.
+  bool MetricsReportPending() const {
+    return last_cppgc_full_gc_event_.has_value();
+  }
+  const base::Optional<cppgc::internal::MetricRecorder::FullCycle>
+  ExtractLastCppgcFullGcEvent() {
+    return std::move(last_cppgc_full_gc_event_);
+  }
+  const base::Optional<
+      cppgc::internal::MetricRecorder::MainThreadIncrementalMark>
+  ExtractLastCppgcIncrementalMarkEvent() {
+    return std::move(last_cppgc_incremental_mark_event_);
+  }
+
  private:
+  class MetricRecorderAdapter;
+
   void FinalizeIncrementalGarbageCollectionIfNeeded(
       cppgc::Heap::StackState) final {
     // For unified heap, CppHeap shouldn't finalize independently (i.e.
@@ -94,6 +118,14 @@ class V8_EXPORT_PRIVATE CppHeap final
 
   bool in_detached_testing_mode_ = false;
   bool force_incremental_marking_for_testing_ = false;
+
+  bool is_in_v8_marking_step_ = false;
+  base::Optional<cppgc::internal::MetricRecorder::FullCycle>
+      last_cppgc_full_gc_event_;
+  base::Optional<cppgc::internal::MetricRecorder::MainThreadIncrementalMark>
+      last_cppgc_incremental_mark_event_;
+
+  friend class MetricRecorderAdapter;
 };
 
 }  // namespace internal

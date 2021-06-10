@@ -8,7 +8,7 @@
 // TODO(v8:11421): Remove #if once baseline compiler is ported to other
 // architectures.
 #if V8_TARGET_ARCH_IA32 || V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_ARM64 || \
-    V8_TARGET_ARCH_ARM
+    V8_TARGET_ARCH_ARM || V8_TARGET_ARCH_RISCV64
 
 #include "src/codegen/macro-assembler.h"
 #include "src/objects/tagged-index.h"
@@ -32,10 +32,9 @@ class BaselineAssembler {
 
   inline void GetCode(Isolate* isolate, CodeDesc* desc);
   inline int pc_offset() const;
-  inline bool emit_debug_code() const;
   inline void CodeEntry() const;
   inline void ExceptionHandler() const;
-  inline void RecordComment(const char* string);
+  V8_INLINE void RecordComment(const char* string);
   inline void Trap();
   inline void DebugBreak();
 
@@ -127,8 +126,8 @@ class BaselineAssembler {
   template <typename... T>
   inline void Pop(T... registers);
 
-  inline void CallBuiltin(Builtins::Name builtin);
-  inline void TailCallBuiltin(Builtins::Name builtin);
+  inline void CallBuiltin(Builtin builtin);
+  inline void TailCallBuiltin(Builtin builtin);
   inline void CallRuntime(Runtime::FunctionId function, int nargs);
 
   inline void LoadTaggedPointerField(Register output, Register source,

@@ -39,6 +39,8 @@ class CodeDataContainer;
   V(kReadOnlyObjectCache, "(Read-only object cache)") \
   V(kWeakCollections, "(Weak collections)")           \
   V(kWrapperTracing, "(Wrapper tracing)")             \
+  V(kWriteBarrier, "(Write barrier)")                 \
+  V(kRetainMaps, "(Retain maps)")                     \
   V(kUnknown, "(Unknown)")
 
 class VisitorSynchronization : public AllStatic {
@@ -89,7 +91,6 @@ class RootVisitor {
   // Intended for serialization/deserialization checking: insert, or
   // check for the presence of, a tag at this position in the stream.
   // Also used for marking up GC roots in heap snapshots.
-  // TODO(ulan): Remove this.
   virtual void Synchronize(VisitorSynchronization::SyncTag tag) {}
 
   static const char* RootName(Root root);
@@ -162,6 +163,9 @@ class ObjectVisitor {
 
   // Visits the relocation info using the given iterator.
   virtual void VisitRelocInfo(RelocIterator* it);
+
+  // Visits the object's map pointer, decoding as necessary
+  virtual void VisitMapPointer(HeapObject host) { UNREACHABLE(); }
 };
 
 }  // namespace internal

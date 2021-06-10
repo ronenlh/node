@@ -138,6 +138,14 @@ bool InstructionSelectorTest::Stream::IsSameAsFirst(
   return unallocated->HasSameAsInputPolicy();
 }
 
+bool InstructionSelectorTest::Stream::IsSameAsInput(
+    const InstructionOperand* operand, int input_index) const {
+  if (!operand->IsUnallocated()) return false;
+  const UnallocatedOperand* unallocated = UnallocatedOperand::cast(operand);
+  return unallocated->HasSameAsInputPolicy() &&
+         unallocated->input_index() == input_index;
+}
+
 bool InstructionSelectorTest::Stream::IsUsedAtStart(
     const InstructionOperand* operand) const {
   if (!operand->IsUnallocated()) return false;
@@ -400,7 +408,7 @@ TARGET_TEST_F(InstructionSelectorTest, CallStubWithDeopt) {
   ZoneVector<MachineType> float64_type(1, MachineType::Float64(), zone());
   ZoneVector<MachineType> tagged_type(1, MachineType::AnyTagged(), zone());
 
-  Callable callable = Builtins::CallableFor(isolate(), Builtins::kToObject);
+  Callable callable = Builtins::CallableFor(isolate(), Builtin::kToObject);
   auto call_descriptor = Linkage::GetStubCallDescriptor(
       zone(), callable.descriptor(), 1, CallDescriptor::kNeedsFrameState,
       Operator::kNoProperties);
@@ -493,7 +501,7 @@ TARGET_TEST_F(InstructionSelectorTest, CallStubWithDeoptRecursiveFrameState) {
   ZoneVector<MachineType> int32_type(1, MachineType::Int32(), zone());
   ZoneVector<MachineType> float64_type(1, MachineType::Float64(), zone());
 
-  Callable callable = Builtins::CallableFor(isolate(), Builtins::kToObject);
+  Callable callable = Builtins::CallableFor(isolate(), Builtin::kToObject);
   auto call_descriptor = Linkage::GetStubCallDescriptor(
       zone(), callable.descriptor(), 1, CallDescriptor::kNeedsFrameState,
       Operator::kNoProperties);

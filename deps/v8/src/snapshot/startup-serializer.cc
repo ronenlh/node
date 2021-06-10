@@ -98,10 +98,13 @@ bool IsUnexpectedCodeObject(Isolate* isolate, HeapObject obj) {
   // See Heap::interpreter_entry_trampoline_for_profiling.
 
   switch (code.builtin_index()) {
-    case Builtins::kAbort:
-    case Builtins::kCEntry_Return1_DontSaveFPRegs_ArgvOnStack_NoBuiltinExit:
-    case Builtins::kInterpreterEntryTrampoline:
-    case Builtins::kRecordWrite:
+    case Builtin::kAbort:
+    case Builtin::kCEntry_Return1_DontSaveFPRegs_ArgvOnStack_NoBuiltinExit:
+    case Builtin::kInterpreterEntryTrampoline:
+    case Builtin::kRecordWriteEmitRememberedSetSaveFP:
+    case Builtin::kRecordWriteOmitRememberedSetSaveFP:
+    case Builtin::kRecordWriteEmitRememberedSetIgnoreFP:
+    case Builtin::kRecordWriteOmitRememberedSetIgnoreFP:
       return false;
     default:
       return true;

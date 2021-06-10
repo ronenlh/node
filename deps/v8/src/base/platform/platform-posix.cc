@@ -23,12 +23,12 @@
 #include <sys/types.h>
 #if defined(__APPLE__) || defined(__DragonFly__) || defined(__FreeBSD__) || \
     defined(__NetBSD__) || defined(__OpenBSD__)
-#include <sys/sysctl.h>  // NOLINT, for sysctl
+#include <sys/sysctl.h>  // for sysctl
 #endif
 
 #if defined(ANDROID) && !defined(V8_ANDROID_LOG_STDOUT)
 #define LOG_TAG "v8"
-#include <android/log.h>  // NOLINT
+#include <android/log.h>
 #endif
 
 #include <cmath>
@@ -52,7 +52,7 @@
 #endif
 
 #if V8_OS_LINUX
-#include <sys/prctl.h>  // NOLINT, for prctl
+#include <sys/prctl.h>  // for prctl
 #endif
 
 #if defined(V8_OS_FUCHSIA)
@@ -82,7 +82,7 @@ extern int madvise(caddr_t, size_t, int);
 #endif
 
 #if defined(V8_LIBC_GLIBC)
-extern "C" void* __libc_stack_end;  // NOLINT
+extern "C" void* __libc_stack_end;
 #endif
 
 namespace v8 {
@@ -167,6 +167,21 @@ void* Allocate(void* hint, size_t size, OS::MemoryPermission access,
   int flags = GetFlagsForMemoryPermission(access, page_type);
   void* result = mmap(hint, size, prot, flags, kMmapFd, kMmapFdOffset);
   if (result == MAP_FAILED) return nullptr;
+#if ENABLE_HUGEPAGE
+  if (result != nullptr && size >= kHugePageSize) {
+    const uintptr_t huge_start =
+        RoundUp(reinterpret_cast<uintptr_t>(result), kHugePageSize);
+    const uintptr_t huge_end =
+        RoundDown(reinterpret_cast<uintptr_t>(result) + size, kHugePageSize);
+    if (huge_end > huge_start) {
+      // Bail out in case the aligned addresses do not provide a block of at
+      // least kHugePageSize size.
+      madvise(reinterpret_cast<void*>(huge_start), huge_end - huge_start,
+              MADV_HUGEPAGE);
+    }
+  }
+#endif
+
   return result;
 }
 
@@ -936,8 +951,7 @@ static void InitializeTlsBaseOffset() {
   buffer[kBufferSize - 1] = '\0';
   char* period_pos = strchr(buffer, '.');
   *period_pos = '\0';
-  int kernel_version_major =
-      static_cast<int>(strtol(buffer, nullptr, 10));  // NOLINT
+  int kernel_version_major = static_cast<int>(strtol(buffer, nullptr, 10));
   // The constants below are taken from pthreads.s from the XNU kernel
   // sources archive at www.opensource.apple.com.
   if (kernel_version_major < 11) {

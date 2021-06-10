@@ -5,37 +5,37 @@
 #ifndef V8_HEAP_HEAP_INL_H_
 #define V8_HEAP_HEAP_INL_H_
 
+#include <atomic>
 #include <cmath>
 
 // Clients of this interface shouldn't depend on lots of heap internals.
-// Do not include anything from src/heap other than src/heap/heap.h and its
-// write barrier here!
+// Avoid including anything but `heap.h` from `src/heap` where possible.
 #include "src/base/atomic-utils.h"
 #include "src/base/atomicops.h"
+#include "src/base/platform/mutex.h"
 #include "src/base/platform/platform.h"
+#include "src/base/sanitizer/msan.h"
 #include "src/common/assert-scope.h"
-#include "src/heap/heap-write-barrier.h"
-#include "src/heap/heap.h"
-#include "src/heap/third-party/heap-api.h"
-#include "src/objects/feedback-vector.h"
-
-// TODO(gc): There is one more include to remove in order to no longer
-// leak heap internals to users of this interface!
 #include "src/execution/isolate-data.h"
 #include "src/execution/isolate.h"
 #include "src/heap/code-object-registry.h"
+#include "src/heap/heap-write-barrier.h"
+#include "src/heap/heap.h"
 #include "src/heap/large-spaces.h"
 #include "src/heap/memory-allocator.h"
 #include "src/heap/memory-chunk.h"
 #include "src/heap/new-spaces-inl.h"
 #include "src/heap/paged-spaces-inl.h"
+#include "src/heap/read-only-heap.h"
 #include "src/heap/read-only-spaces.h"
 #include "src/heap/spaces-inl.h"
+#include "src/heap/third-party/heap-api.h"
 #include "src/objects/allocation-site-inl.h"
 #include "src/objects/api-callbacks-inl.h"
 #include "src/objects/cell-inl.h"
 #include "src/objects/descriptor-array.h"
 #include "src/objects/feedback-cell-inl.h"
+#include "src/objects/feedback-vector.h"
 #include "src/objects/literal-objects-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/oddball.h"
@@ -45,7 +45,6 @@
 #include "src/objects/slots-inl.h"
 #include "src/objects/struct-inl.h"
 #include "src/profiler/heap-profiler.h"
-#include "src/sanitizer/msan.h"
 #include "src/strings/string-hasher.h"
 #include "src/zone/zone-list-inl.h"
 
@@ -137,21 +136,18 @@ void Heap::SetPendingOptimizeForTestBytecode(Object hash_table) {
 }
 
 PagedSpace* Heap::paged_space(int idx) {
-  DCHECK_NE(idx, LO_SPACE);
-  DCHECK_NE(idx, NEW_SPACE);
-  DCHECK_NE(idx, CODE_LO_SPACE);
-  DCHECK_NE(idx, NEW_LO_SPACE);
+  DCHECK(idx == OLD_SPACE || idx == CODE_SPACE || idx == MAP_SPACE);
   return static_cast<PagedSpace*>(space_[idx]);
 }
 
 Space* Heap::space(int idx) { return space_[idx]; }
 
 Address* Heap::NewSpaceAllocationTopAddress() {
-  return new_space_->allocation_top_address();
+  return new_space_ ? new_space_->allocation_top_address() : nullptr;
 }
 
 Address* Heap::NewSpaceAllocationLimitAddress() {
-  return new_space_->allocation_limit_address();
+  return new_space_ ? new_space_->allocation_limit_address() : nullptr;
 }
 
 Address* Heap::OldSpaceAllocationTopAddress() {
@@ -162,19 +158,12 @@ Address* Heap::OldSpaceAllocationLimitAddress() {
   return old_space_->allocation_limit_address();
 }
 
-void Heap::UpdateNewSpaceAllocationCounter() {
-  new_space_allocation_counter_ = NewSpaceAllocationCounter();
-}
-
-size_t Heap::NewSpaceAllocationCounter() {
-  return new_space_allocation_counter_ + new_space()->AllocatedSinceLastGC();
-}
-
-inline const base::AddressRegion& Heap::code_range() {
+inline const base::AddressRegion& Heap::code_region() {
 #ifdef V8_ENABLE_THIRD_PARTY_HEAP
   return tp_heap_->GetCodeRange();
 #else
-  return memory_allocator_->code_range();
+  static constexpr base::AddressRegion kEmptyRegion;
+  return code_range_ ? code_range_->reservation()->region() : kEmptyRegion;
 #endif
 }
 
@@ -189,13 +178,18 @@ AllocationResult Heap::AllocateRaw(int size_in_bytes, AllocationType type,
 #ifdef V8_ENABLE_ALLOCATION_TIMEOUT
   if (FLAG_random_gc_interval > 0 || FLAG_gc_interval >= 0) {
     if (!always_allocate() && Heap::allocation_timeout_-- <= 0) {
-      return AllocationResult::Retry();
+      AllocationSpace space = FLAG_single_generation ? OLD_SPACE : NEW_SPACE;
+      return AllocationResult::Retry(space);
     }
   }
 #endif
 #ifdef DEBUG
   IncrementObjectCounters();
 #endif
+
+  if (CanSafepoint()) {
+    main_thread_local_heap()->Safepoint();
+  }
 
   size_t large_object_threshold = MaxRegularHeapObjectSize(type);
   bool large_object =
@@ -245,6 +239,12 @@ AllocationResult Heap::AllocateRaw(int size_in_bytes, AllocationType type,
       DCHECK(CanAllocateInReadOnlySpace());
       DCHECK_EQ(AllocationOrigin::kRuntime, origin);
       allocation = read_only_space_->AllocateRaw(size_in_bytes, alignment);
+    } else if (AllocationType::kSharedOld == type) {
+      allocation =
+          shared_old_allocator_->AllocateRaw(size_in_bytes, alignment, origin);
+    } else if (AllocationType::kSharedMap == type) {
+      allocation =
+          shared_map_allocator_->AllocateRaw(size_in_bytes, alignment, origin);
     } else {
       UNREACHABLE();
     }
@@ -285,10 +285,9 @@ HeapObject Heap::AllocateRawWith(int size, AllocationType allocation,
   DCHECK(AllowHeapAllocation::IsAllowed());
   DCHECK_EQ(gc_state(), NOT_IN_GC);
   Heap* heap = isolate()->heap();
-  if (!V8_ENABLE_THIRD_PARTY_HEAP_BOOL &&
-      allocation == AllocationType::kYoung &&
+  if (allocation == AllocationType::kYoung &&
       alignment == AllocationAlignment::kWordAligned &&
-      size <= MaxRegularHeapObjectSize(allocation)) {
+      size <= MaxRegularHeapObjectSize(allocation) && !FLAG_single_generation) {
     Address* top = heap->NewSpaceAllocationTopAddress();
     Address* limit = heap->NewSpaceAllocationLimitAddress();
     if ((*limit - *top >= static_cast<unsigned>(size)) &&
@@ -383,17 +382,21 @@ void Heap::RegisterExternalString(String string) {
 
 void Heap::FinalizeExternalString(String string) {
   DCHECK(string.IsExternalString());
-  Page* page = Page::FromHeapObject(string);
   ExternalString ext_string = ExternalString::cast(string);
 
-  page->DecrementExternalBackingStoreBytes(
-      ExternalBackingStoreType::kExternalString,
-      ext_string.ExternalPayloadSize());
+  if (!FLAG_enable_third_party_heap) {
+    Page* page = Page::FromHeapObject(string);
+    page->DecrementExternalBackingStoreBytes(
+        ExternalBackingStoreType::kExternalString,
+        ext_string.ExternalPayloadSize());
+  }
 
   ext_string.DisposeResource(isolate());
 }
 
-Address Heap::NewSpaceTop() { return new_space_->top(); }
+Address Heap::NewSpaceTop() {
+  return new_space_ ? new_space_->top() : kNullAddress;
+}
 
 bool Heap::InYoungGeneration(Object object) {
   DCHECK(!HasWeakHeapObjectTag(object));
@@ -458,7 +461,12 @@ bool Heap::InToPage(HeapObject heap_object) {
   return BasicMemoryChunk::FromHeapObject(heap_object)->IsToPage();
 }
 
-bool Heap::InOldSpace(Object object) { return old_space_->Contains(object); }
+bool Heap::InOldSpace(Object object) {
+  if (V8_ENABLE_THIRD_PARTY_HEAP_BOOL)
+    return object.IsHeapObject() &&
+           third_party_heap::Heap::InOldSpace(object.ptr());
+  return old_space_->Contains(object);
+}
 
 // static
 Heap* Heap::FromWritableHeapObject(HeapObject obj) {
@@ -502,7 +510,7 @@ AllocationMemento Heap::FindAllocationMemento(Map map, HeapObject object) {
   // below (memento_address == top) ensures that this is safe. Mark the word as
   // initialized to silence MemorySanitizer warnings.
   MSAN_MEMORY_IS_INITIALIZED(candidate_map_slot.address(), kTaggedSize);
-  if (!candidate_map_slot.contains_value(
+  if (!candidate_map_slot.contains_map_value(
           ReadOnlyRoots(this).allocation_memento_map().ptr())) {
     return AllocationMemento();
   }
@@ -575,22 +583,51 @@ void Heap::UpdateAllocationSite(Map map, HeapObject object,
 }
 
 bool Heap::IsPendingAllocation(HeapObject object) {
-  // TODO(ulan): Optimize this function to perform 3 loads at most.
+  DCHECK(deserialization_complete());
+
+  BasicMemoryChunk* chunk = BasicMemoryChunk::FromHeapObject(object);
+  if (chunk->InReadOnlySpace()) return false;
+
+  BaseSpace* base_space = chunk->owner();
   Address addr = object.address();
-  Address top = new_space_->original_top_acquire();
-  Address limit = new_space_->original_limit_relaxed();
-  if (top <= addr && addr < limit) return true;
-  PagedSpaceIterator spaces(this);
-  for (PagedSpace* space = spaces.Next(); space != nullptr;
-       space = spaces.Next()) {
-    top = space->original_top_acquire();
-    limit = space->original_limit_relaxed();
-    if (top <= addr && addr < limit) return true;
+
+  switch (base_space->identity()) {
+    case NEW_SPACE: {
+      base::SharedMutexGuard<base::kShared> guard(
+          new_space_->pending_allocation_mutex());
+      Address top = new_space_->original_top_acquire();
+      Address limit = new_space_->original_limit_relaxed();
+      DCHECK_LE(top, limit);
+      return top && top <= addr && addr < limit;
+    }
+
+    case OLD_SPACE:
+    case CODE_SPACE:
+    case MAP_SPACE: {
+      PagedSpace* paged_space = static_cast<PagedSpace*>(base_space);
+      base::SharedMutexGuard<base::kShared> guard(
+          paged_space->pending_allocation_mutex());
+      Address top = paged_space->original_top();
+      Address limit = paged_space->original_limit();
+      DCHECK_LE(top, limit);
+      return top && top <= addr && addr < limit;
+    }
+
+    case LO_SPACE:
+    case CODE_LO_SPACE:
+    case NEW_LO_SPACE: {
+      LargeObjectSpace* large_space =
+          static_cast<LargeObjectSpace*>(base_space);
+      base::SharedMutexGuard<base::kShared> guard(
+          large_space->pending_allocation_mutex());
+      return addr == large_space->pending_object();
+    }
+
+    case RO_SPACE:
+      UNREACHABLE();
   }
-  if (addr == lo_space_->pending_object()) return true;
-  if (addr == new_lo_space_->pending_object()) return true;
-  if (addr == code_lo_space_->pending_object()) return true;
-  return false;
+
+  UNREACHABLE();
 }
 
 void Heap::ExternalStringTable::AddString(String string) {
@@ -644,8 +681,8 @@ int Heap::NextDebuggingId() {
 }
 
 int Heap::GetNextTemplateSerialNumber() {
-  int next_serial_number = next_template_serial_number().value() + 1;
-  set_next_template_serial_number(Smi::FromInt(next_serial_number));
+  int next_serial_number = next_template_serial_number().value();
+  set_next_template_serial_number(Smi::FromInt(next_serial_number + 1));
   return next_serial_number;
 }
 
@@ -664,14 +701,16 @@ int Heap::MaxNumberToStringCacheSize() const {
 
 void Heap::IncrementExternalBackingStoreBytes(ExternalBackingStoreType type,
                                               size_t amount) {
-  base::CheckedIncrement(&backing_store_bytes_, amount);
+  base::CheckedIncrement(&backing_store_bytes_, static_cast<uint64_t>(amount),
+                         std::memory_order_relaxed);
   // TODO(mlippautz): Implement interrupt for global memory allocations that can
   // trigger garbage collections.
 }
 
 void Heap::DecrementExternalBackingStoreBytes(ExternalBackingStoreType type,
                                               size_t amount) {
-  base::CheckedDecrement(&backing_store_bytes_, amount);
+  base::CheckedDecrement(&backing_store_bytes_, static_cast<uint64_t>(amount),
+                         std::memory_order_relaxed);
 }
 
 bool Heap::HasDirtyJSFinalizationRegistries() {
@@ -724,6 +763,7 @@ CodePageCollectionMemoryModificationScope::
   if (heap_->write_protect_code_memory() &&
       !heap_->code_space_memory_modification_scope_depth()) {
     heap_->EnableUnprotectedMemoryChunksRegistry();
+    heap_->IncrementCodePageCollectionMemoryModificationScopeDepth();
   }
 }
 
@@ -731,8 +771,11 @@ CodePageCollectionMemoryModificationScope::
     ~CodePageCollectionMemoryModificationScope() {
   if (heap_->write_protect_code_memory() &&
       !heap_->code_space_memory_modification_scope_depth()) {
-    heap_->ProtectUnprotectedMemoryChunks();
-    heap_->DisableUnprotectedMemoryChunksRegistry();
+    heap_->DecrementCodePageCollectionMemoryModificationScopeDepth();
+    if (heap_->code_page_collection_memory_modification_scope_depth() == 0) {
+      heap_->ProtectUnprotectedMemoryChunks();
+      heap_->DisableUnprotectedMemoryChunksRegistry();
+    }
   }
 }
 
