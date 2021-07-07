@@ -9,7 +9,7 @@ On Live's Browser, click "Add Folder" and add `node/m4l/Max/` from the repositor
 
 Drag and drop the file into the bottom bar.
 
-![Browser](assets/browser.png "Browser")
+![Browser](assets/ableton.png "Ableton")
 
 Next to it, drag and drop an instrument from the "Instruments" category in the browser. To connect to an external MIDI instrument (with a MIDI cable) you can select "External Instrument."
 
