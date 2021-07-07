@@ -19,6 +19,6 @@ Drag and drop a javascript file into the Plugin, and click "Trigger."
 
 To edit the plugin, click on edit button above the plugin window. A Max for Live patcher window should open up.
 
-![Browser](assets/patcher.png "Patcher")
+![Browser](assets/patcher2.png "Patcher")
 
 Disable "Presentation Mode" by clicking the bottom active yellow button to see the innards of the patch.
