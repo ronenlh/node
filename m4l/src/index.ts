@@ -1,12 +1,11 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import { Subject } from 'rxjs';
 import path from 'path';
-import fs from 'fs';
 import { Address, Handle, Loop, MIDINote, State, UVHandleTypeNames, UVRunModeName } from './types';
 
 // max-api is not imported from node_modules, but from Node4Max runtime
 // @ts-ignore - no typescript typings yet
-import { post, outlet } from 'max-api';
+import max from 'max-api';
 
 const handles = new Map<Address, Handle>();
 const loops = new Map<Address, Loop>();
@@ -66,37 +65,39 @@ export const createLogSubject = (proc: ChildProcessWithoutNullStreams): Subject<
   return log$;
 };
 
-try {
-  // retrieve the third argument through destructuring
-  // arguments are passed from a Max message
-  const [,,scriptFile] = process.argv;
+max.addHandler('input', (scriptPath: string) => {
+  try {
+    // retrieve the third argument through destructuring
+    // arguments are passed from a Max message
+    // const [,,scriptFile] = process.argv;
 
-  const nodeProcess: ChildProcessWithoutNullStreams = spawnNode(scriptFile);
-  createLogSubject(nodeProcess).subscribe((log: string) => {
-    const [state, data] = parseLogData(log) ?? [];
-    if (!data) return;
+    const nodeProcess: ChildProcessWithoutNullStreams = spawnNode(scriptPath);
+    createLogSubject(nodeProcess).subscribe((log: string) => {
+      const [state, data] = parseLogData(log) ?? [];
+      if (!data) return;
 
-    const note: MIDINote = data.type + 100; // adds 100 for higher MIDI note range
-    post(state, data.typeName, note);
+      const note: MIDINote = data.type + 100; // adds 100 for higher MIDI note range
+      max.post(state, data.typeName, note);
 
-    switch (state) {
-      case 'handle_init':
-        outlet([note, 50]);
-        break;
-      case 'handle_start':
-        outlet([note, 100]);
-        break;
-      case 'handle_stop':
-        outlet([note, 0]);
-        break;
-      case 'loop_run':
-        outlet([note, 100]);
-        break;
-      case 'loop_alive':
-        outlet([note, 50]);
-        break;
-    }
-  });
-} catch (err) {
-  process.exit(1);
-}
+      switch (state) {
+        case 'handle_init':
+          max.outlet([note, 50]);
+          break;
+        case 'handle_start':
+          max.outlet([note, 100]);
+          break;
+        case 'handle_stop':
+          max.outlet([note, 0]);
+          break;
+        case 'loop_run':
+          max.outlet([note, 100]);
+          break;
+        case 'loop_alive':
+          max.outlet([note, 50]);
+          break;
+      }
+    });
+  } catch (err) {
+    process.exit(1);
+  }
+});
