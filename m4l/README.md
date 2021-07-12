@@ -22,3 +22,7 @@ To edit the plugin, click on edit button above the plugin window. A Max for Live
 ![Browser](assets/patcher2.png "Patcher")
 
 Disable "Presentation Mode" by clicking the bottom active yellow button to see the innards of the patch.
+
+# Warning
+
+When tinkering with sound, it’s very important to output things at safe levels to avoid damaging one’s speakers or worse: hearing.
