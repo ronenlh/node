@@ -1,3 +1,7 @@
+# What Does the Event Loop Sound Like?
+A musical journey inside Node internals
+https://medium.com/att-israel/what-does-the-event-loop-sound-like-b571abaa3562
+
 # Build Nodejs
 See [BUILDING.md](https://github.com/ronenlh/node/blob/musical-node-2/BUILDING.md "BUILDING.md") for instructions on how to build Node.js from source and a list of supported platforms.
 
