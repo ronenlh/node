@@ -1,27 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.UVRunMode = exports.UVRunModeName = exports.UVHandleType = exports.UVHandleTypeNames = void 0;
-exports.UVHandleTypeNames = [
-    'UV_UNKNOWN_HANDLE',
-    'UV_ASYNC',
-    'UV_CHECK',
-    'UV_FS_EVENT',
-    'UV_FS_POLL',
-    'UV_HANDLE',
-    'UV_IDLE',
-    'UV_NAMED_PIPE',
-    'UV_POLL',
-    'UV_PREPARE',
-    'UV_PROCESS',
-    'UV_STREAM',
-    'UV_TCP',
-    'UV_TIMER',
-    'UV_TTY',
-    'UV_UDP',
-    'UV_SIGNAL',
-    'UV_FILE',
-    'UV_HANDLE_TYPE_MAX'
-];
+exports.UVRunMode = exports.UVHandleType = void 0;
 var UVHandleType;
 (function (UVHandleType) {
     UVHandleType[UVHandleType["UV_UNKNOWN_HANDLE"] = 0] = "UV_UNKNOWN_HANDLE";
@@ -44,11 +23,6 @@ var UVHandleType;
     UVHandleType[UVHandleType["UV_FILE"] = 17] = "UV_FILE";
     UVHandleType[UVHandleType["UV_HANDLE_TYPE_MAX"] = 18] = "UV_HANDLE_TYPE_MAX";
 })(UVHandleType = exports.UVHandleType || (exports.UVHandleType = {}));
-exports.UVRunModeName = [
-    'UV_RUN_DEFAULT',
-    'UV_RUN_ONCE',
-    'UV_RUN_NOWAIT'
-];
 var UVRunMode;
 (function (UVRunMode) {
     UVRunMode[UVRunMode["UV_RUN_DEFAULT"] = 19] = "UV_RUN_DEFAULT";
